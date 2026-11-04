@@ -1,0 +1,22 @@
+name: PNAM portable runtime
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure PNAM runtime without RTNeural or JUCE
+        run: cmake -S . -B build/pnam -DBUILD_RTNEURAL=OFF -DBUILD_INTERNAL_STATIC_WAVENET=OFF -DBUILD_STATIC_INTERNAL_NAMA2=OFF -DBUILD_PNAM_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build library, C API and examples
+        run: cmake --build build/pnam --config Release --parallel 2
+      - name: Verify controls, Full/Lite, metadata and output modes
+        run: ctest --test-dir build/pnam -C Release --output-on-failure

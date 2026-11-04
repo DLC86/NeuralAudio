@@ -1,6 +1,9 @@
 #pragma once
 
 #include <stddef.h>
+#ifndef __cplusplus
+#include <stdbool.h>
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -12,14 +15,15 @@ extern "C" {
 #define NA_EXTERN extern
 #endif
 
-struct NeuralModel;
-struct NeuralModelLoader;
+typedef struct NeuralModel NeuralModel;
+typedef struct NeuralModelLoader NeuralModelLoader;
 
 NA_EXTERN NeuralModelLoader* CreateLoader();
 
 NA_EXTERN void DeleteLoader(NeuralModelLoader* loader);
 
 NA_EXTERN NeuralModel* CreateModelFromFile(NeuralModelLoader *loader, const wchar_t* modelPath);
+NA_EXTERN NeuralModel* CreateModelFromFileUtf8(NeuralModelLoader *loader, const char* modelPath);
 
 NA_EXTERN void DeleteModel(NeuralModel* model);
 
@@ -44,6 +48,24 @@ NA_EXTERN float GetRecommendedOutputDBAdjustment(NeuralModel* model);
 NA_EXTERN float GetSampleRate(NeuralModel* model);
 
 NA_EXTERN void Process(NeuralModel* model, float* input, float* output, size_t numSamples);
+
+// PNAM additions. Call setters between Process calls on the same thread.
+// Size changes/Prepare are offline operations. New setters return 1 on success, 0 on error.
+enum PnamOutputMode { PNAM_RAW = 0, PNAM_CALIBRATED = 1, PNAM_NORMALIZED = 2, PNAM_AUTO = 3 };
+NA_EXTERN bool IsParametric(NeuralModel* model);
+NA_EXTERN size_t PnamGetControlCount(NeuralModel* model);
+NA_EXTERN const char* PnamGetControlName(NeuralModel* model, size_t index);
+NA_EXTERN int PnamGetControlRange(NeuralModel* model, size_t index, float* minimum, float* maximum, float* nominal);
+NA_EXTERN size_t PnamGetPositionCount(NeuralModel* model, size_t index);
+NA_EXTERN const char* PnamGetPositionName(NeuralModel* model, size_t index, size_t position);
+NA_EXTERN int PnamSetControls(NeuralModel* model, const float* values, size_t count);
+NA_EXTERN int PnamSetOutputMode(NeuralModel* model, int mode);
+NA_EXTERN int PnamGetOutputMode(NeuralModel* model);
+NA_EXTERN int PnamGetEffectiveOutputMode(NeuralModel* model);
+NA_EXTERN int PnamSetCalibrationLevelDBu(NeuralModel* model, float level);
+NA_EXTERN int PnamSetLite(NeuralModel* model, bool lite);
+// Returns required bytes including NUL. Pass NULL/0 to query; metadata is never truncated.
+NA_EXTERN size_t PnamGetMetadataJson(NeuralModel* model, char* buffer, size_t capacity);
 
 #ifdef __cplusplus
 }

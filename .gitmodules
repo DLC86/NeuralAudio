@@ -1,6 +1,7 @@
 [submodule "deps/NeuralAmpModelerCore"]
 	path = deps/NeuralAmpModelerCore
-	url = https://github.com/mikeoliphant/NeuralAmpModelerCore
+	url = https://github.com/DLC86/NeuralAmpModelerCore.git
+	branch = codex/pnam-a2-fast
 [submodule "deps/RTNeural"]
 	path = deps/RTNeural
 	url = https://github.com/mikeoliphant/RTNeural

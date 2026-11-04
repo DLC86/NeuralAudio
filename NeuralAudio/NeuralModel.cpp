@@ -3,6 +3,9 @@
 #include "NeuralModel.h"
 #ifdef BUILD_NAMCORE
 #include "NAMModel.h"
+#ifdef BUILD_PNAM
+#include "ParametricModel.h"
+#endif
 #endif
 #ifdef BUILD_RTNEURAL
 #ifdef BUILD_STATIC_RTNEURAL
@@ -343,6 +346,19 @@ namespace NeuralAudio
 		EnsureModelDefsAreLoaded();
 
 		NeuralModelImpl* newModel = nullptr;
+
+#ifdef BUILD_PNAM
+        const auto architecture = modelJson.value("architecture", std::string());
+        if ((extension == ".nam" || extension == ".pnam") &&
+            (architecture == "HyperA2" || architecture == "HyperWaveNet" || architecture == "ConcatWaveNet"))
+        {
+            auto model = std::make_unique<ParametricModel>();
+            model->SetModelLoader(this);
+            model->LoadFromJson(modelJson);
+            if (doPrewarm) model->Prewarm();
+            return model.release();
+        }
+#endif
 
 		if (extension == ".nam")
 		{

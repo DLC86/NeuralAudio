@@ -1,3 +1,5 @@
+> **PNAM hardware fork:** supports HyperA2 Full/Lite, HyperWaveNet and ConcatWaveNet, with knob/switch controls, complete metadata, and Raw/Calibrated/Normalized/Auto output modes. See [PNAM integration guide](PNAM.md) and [C example](Examples/PnamRender.c).
+
 # NeuralAudio
 
 NeuralAudio is a C++ library designed to make it easy to use neural network machine learning models (ie: guitar amplifier captures/profiles) in real-time audio applications.

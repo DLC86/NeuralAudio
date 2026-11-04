@@ -154,37 +154,30 @@ set(SOURCES
 	TemplateHelper.h)
 
 if(BUILD_NAMCORE)
-	set(NAM_SOURCES	../deps/NeuralAmpModelerCore/NAM/activations.h
-		../deps/NeuralAmpModelerCore/NAM/activations.cpp
-		../deps/NeuralAmpModelerCore/NAM/conv1d.cpp
-		../deps/NeuralAmpModelerCore/NAM/conv1d.h
-		../deps/NeuralAmpModelerCore/NAM/film.h 
-		../deps/NeuralAmpModelerCore/NAM/gating_activations.h
-		../deps/NeuralAmpModelerCore/NAM/get_dsp.h
-		../deps/NeuralAmpModelerCore/NAM/get_dsp.cpp
-		../deps/NeuralAmpModelerCore/NAM/lstm.h
-		../deps/NeuralAmpModelerCore/NAM/registry.h
-		../deps/NeuralAmpModelerCore/NAM/ring_buffer.h
-		../deps/NeuralAmpModelerCore/NAM/ring_buffer.cpp
-		../deps/NeuralAmpModelerCore/NAM/slimmable.h
-		../deps/NeuralAmpModelerCore/NAM/lstm.cpp
-		../deps/NeuralAmpModelerCore/NAM/dsp.h
-		../deps/NeuralAmpModelerCore/NAM/dsp.cpp
-		../deps/NeuralAmpModelerCore/NAM/container.cpp
-		../deps/NeuralAmpModelerCore/NAM/container.h
-		../deps/NeuralAmpModelerCore/NAM/wavenet/slimmable.cpp
-		../deps/NeuralAmpModelerCore/NAM/wavenet/detail.h
-		../deps/NeuralAmpModelerCore/NAM/wavenet/params.h
-		../deps/NeuralAmpModelerCore/NAM/wavenet/model.h
-		../deps/NeuralAmpModelerCore/NAM/wavenet/model.cpp
-		../deps/NeuralAmpModelerCore/NAM/wavenet/a2_fast.h
-		../deps/NeuralAmpModelerCore/NAM/wavenet/a2_fast.cpp)
+    file(GLOB NAM_SOURCES CONFIGURE_DEPENDS
+        ../deps/NeuralAmpModelerCore/NAM/*.cpp
+        ../deps/NeuralAmpModelerCore/NAM/*/*.cpp)
+endif()
+
+option(BUILD_PNAM "Build portable PNAM runtime" ON)
+if(BUILD_PNAM)
+    if(NOT BUILD_NAMCORE OR NOT NAM_ENABLE_A2_FAST)
+        message(FATAL_ERROR "BUILD_PNAM requires BUILD_NAMCORE and NAM_ENABLE_A2_FAST")
+    endif()
+    list(APPEND SOURCES ParametricModel.cpp ParametricModel.h)
+    add_definitions(-DBUILD_PNAM)
 endif()
 
 add_library(NeuralAudio OBJECT ${SOURCES} ${NAM_SOURCES})
+target_compile_features(NeuralAudio PUBLIC cxx_std_20)
+target_compile_definitions(NeuralAudio PRIVATE EIGEN_MPL2_ONLY=1 EIGEN_NO_DEBUG=1)
+if(BUILD_PNAM)
+    target_compile_definitions(NeuralAudio PUBLIC BUILD_PNAM=1)
+endif()
 
 target_include_directories(NeuralAudio PUBLIC ..)
 target_include_directories(NeuralAudio SYSTEM PRIVATE ../deps/NeuralAmpModelerCore)
+target_include_directories(NeuralAudio SYSTEM BEFORE PRIVATE ../deps/NeuralAmpModelerCore/Dependencies/eigen)
 target_include_directories(NeuralAudio SYSTEM PRIVATE ../deps/RTNeural)
 target_include_directories(NeuralAudio SYSTEM PRIVATE ../deps/math_approx)
 target_include_directories(NeuralAudio SYSTEM PRIVATE ../deps/RTNeural/modules/Eigen)
