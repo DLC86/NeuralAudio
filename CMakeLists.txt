@@ -13,7 +13,6 @@ if(BUILD_PNAM_TESTS AND BUILD_PNAM)
     target_link_libraries(pnam_test PRIVATE NeuralAudio)
     add_test(NAME pnam COMMAND pnam_test ${CMAKE_CURRENT_SOURCE_DIR}/Tests/fixtures)
     add_executable(pnam_render Examples/PnamRender.c)
-    target_include_directories(pnam_render PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(pnam_render PRIVATE NeuralAudioCAPI)
     if(WIN32)
         add_custom_command(TARGET pnam_render POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_if_different

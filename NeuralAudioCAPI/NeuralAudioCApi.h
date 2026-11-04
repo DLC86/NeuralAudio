@@ -9,8 +9,12 @@
 extern "C" {
 #endif
 
-#ifdef _MSC_VER
+#ifdef _WIN32
+#ifdef NEURALAUDIO_CAPI_BUILD
 #define NA_EXTERN extern __declspec(dllexport)
+#else
+#define NA_EXTERN extern __declspec(dllimport)
+#endif
 #else
 #define NA_EXTERN extern
 #endif
