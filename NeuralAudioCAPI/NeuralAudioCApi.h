@@ -64,6 +64,7 @@ NA_EXTERN int PnamGetOutputMode(NeuralModel* model);
 NA_EXTERN int PnamGetEffectiveOutputMode(NeuralModel* model);
 NA_EXTERN int PnamSetCalibrationLevelDBu(NeuralModel* model, float level);
 NA_EXTERN int PnamSetLite(NeuralModel* model, bool lite);
+NA_EXTERN bool PnamHasLite(NeuralModel* model);
 // Returns required bytes including NUL. Pass NULL/0 to query; metadata is never truncated.
 NA_EXTERN size_t PnamGetMetadataJson(NeuralModel* model, char* buffer, size_t capacity);
 

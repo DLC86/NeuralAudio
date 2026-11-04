@@ -30,6 +30,8 @@ ctest --test-dir build/pnam -C Release --output-on-failure
 The `NeuralAudio` CMake target exposes the C++ API; `NeuralAudioCAPI` exposes a C
 interface suitable for hosts that do not use C++. `pnam_render` is a minimal C
 example (see [Examples/PnamRender.c](Examples/PnamRender.c)).
+Link the C++ target or the C API library as appropriate for the host; do not embed
+a second copy of the C++ runtime alongside the C API shared library.
 Use `-DBUILD_PNAM_TESTS=OFF` in a product build. `BUILD_PNAM=OFF` removes the PNAM
 adapter; enabling it requires `BUILD_NAMCORE=ON` and `NAM_ENABLE_A2_FAST=ON`.
 
@@ -114,7 +116,7 @@ Include `NeuralAudioCAPI/NeuralAudioCApi.h` (valid C and C++). Use
 - `PnamGetControlCount/Name/Range`, `PnamGetPositionCount/Name`, `PnamSetControls`.
 - `PnamSetOutputMode` with `PNAM_RAW`, `PNAM_CALIBRATED`, `PNAM_NORMALIZED`, `PNAM_AUTO`.
 - `PnamGetOutputMode`, `PnamGetEffectiveOutputMode`, `PnamSetCalibrationLevelDBu`.
-- `PnamSetLite` (offline, also prewarms), and `PnamGetMetadataJson`.
+- `PnamHasLite`, `PnamSetLite` (offline, also prewarms), and `PnamGetMetadataJson`.
 
 Setters return 1 on success and 0 on error. Name pointers remain valid until the
 model is destroyed. Metadata retrieval returns the required buffer size including
@@ -131,7 +133,7 @@ ConcatWaveNet, requested/effective output modes, rendered output gain, unknown a
 missing metadata, and both C and C++ APIs. Fixtures are synthetic random-weight
 test models, not captures intended for playing.
 
-CI builds Windows x64, Linux x64, macOS ARM64 and Linux ARM64. A successful ARM64
+CI builds Windows x64, Linux x64, macOS and Linux ARM64. A successful ARM64
 build is not a real-time performance measurement of a particular board. This is a
 C++/Eigen runtime for hosts with a C++20 runtime and sufficient RAM; it is not a
 bare-metal microcontroller firmware or an audio-device driver.

@@ -223,6 +223,12 @@ int PnamSetLite(NeuralModel* model, bool lite) {
     return 0;
 #endif
 }
+bool PnamHasLite(NeuralModel* model) {
+#ifdef BUILD_PNAM
+    if (auto* p = Pnam(model)) return p->HasQualityScaling();
+#endif
+    return false;
+}
 size_t PnamGetMetadataJson(NeuralModel* model, char* buffer, size_t capacity) {
 #ifdef BUILD_PNAM
     try {

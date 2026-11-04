@@ -1,5 +1,4 @@
 #include "NeuralAudio/ParametricModel.h"
-#include "NeuralAudioCAPI/NeuralAudioCApi.h"
 #include <cmath>
 #include <fstream>
 #include <iostream>
@@ -145,20 +144,7 @@ int main(int argc, char** argv) {
             }
         }
 
-        auto* cLoader = CreateLoader();
-        const auto cPath = (dir / "hyper_a2_low_rank.nam").u8string();
-        auto* cModel = CreateModelFromFileUtf8(cLoader, reinterpret_cast<const char*>(cPath.c_str()));
-        Check(cModel && IsParametric(cModel), "C loader");
-        Check(PnamGetControlCount(cModel) == 2, "C controls");
-        Check(PnamGetPositionCount(cModel, 1) >= 2, "C switch labels");
-        Check(PnamSetOutputMode(cModel, PNAM_AUTO) == 1 && PnamGetOutputMode(cModel) == PNAM_AUTO, "C output mode");
-        Check(PnamSetOutputMode(cModel, 999) == 0 && PnamGetOutputMode(cModel) == PNAM_AUTO, "Invalid C mode");
-        Check(PnamSetLite(cModel, true) == 1, "C Lite");
-        std::vector<char> metadata(PnamGetMetadataJson(cModel, nullptr, 0));
-        Check(PnamGetMetadataJson(cModel, metadata.data(), metadata.size()) == metadata.size(), "C metadata size");
-        Check(nlohmann::json::parse(metadata.data()).is_object(), "C metadata JSON");
-        DeleteModel(cModel); DeleteLoader(cLoader);
-        std::cout << "PNAM C/C++ controls, output modes, legacy fallback and PyTorch parity passed; max_error=" << maximum << '\n';
+        std::cout << "PNAM C++ controls, output modes, legacy fallback and PyTorch parity passed; max_error=" << maximum << '\n';
     } catch (const std::exception& e) {
         std::cerr << e.what() << '\n'; return 1;
     }
