@@ -8,6 +8,7 @@
 #include <NAM/get_dsp.h>
 #include <NAM/parametric_control.h>
 #include <NAM/wavenet/hyper_a2.h>
+#include "OutputGainCurve.h"
 
 namespace NeuralAudio
 {
@@ -16,6 +17,9 @@ struct ParametricModel::Impl
     std::vector<std::unique_ptr<nam::DSP>> models;
     std::vector<nam::IParametricControl*> controls;
     std::vector<ControlSpec> specs;
+    pnam::OutputGainCurve volume;
+    std::vector<float> values, neuralValues;
+    double volumeTarget=1,volumeCurrent=1,volumeAlpha=1;
     nlohmann::json metadata = nlohmann::json::object();
     size_t active = 0;
     int blockSize = 128;
@@ -66,11 +70,12 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     auto next = std::make_unique<Impl>();
     next->requested = impl->requested;
     next->outputLevel = impl->outputLevel;
-    const bool a2 = source.at("architecture") == "HyperA2";
+    const auto base=pnam::OutputGainCurve::Unwrap(source);
+    const bool a2 = base.at("architecture") == "HyperA2";
     nam::ScopedPrewarmOnResetDefault noPrewarm(false);
     for (int i = 0; i < (a2 ? 2 : 1); ++i)
     {
-        auto child = a2 ? nam::wavenet::SelectHyperA2Branch(source, i == 0) : source;
+        auto child = a2 ? nam::wavenet::SelectHyperA2Branch(base, i == 0) : base;
         // Preserve the source metadata verbatim for the host, but do not pass
         // invalid optional level fields to NAM Core's numeric metadata parser.
         if (child.contains("metadata") && !child["metadata"].is_object())
@@ -91,6 +96,20 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     next->active = next->models.size() - 1; // Full is the default, independent of export preference.
     for (const auto& spec : next->controls.front()->GetParamSpecs())
         next->specs.push_back({spec.name, spec.min, spec.max, spec.defaultValue, spec.enum_names});
+    if (source.at("architecture")=="ParametricOutputGain") {
+        next->volume.Load(source.at("config").at("output_gain"),next->specs.size());
+        for (const auto& s:next->specs) if (s.name==next->volume.name)
+            throw std::runtime_error("Output volume is already a neural control");
+        const auto params=next->controls.front()->GetParams();
+        next->neuralValues.assign(params.begin(),params.end());
+        next->values=next->neuralValues;
+        next->values.insert(next->values.begin()+static_cast<std::ptrdiff_t>(next->volume.index),next->volume.defaultValue);
+        next->specs.insert(next->specs.begin()+static_cast<std::ptrdiff_t>(next->volume.index),ControlSpec{
+            next->volume.name,static_cast<float>(next->volume.minimum),static_cast<float>(next->volume.maximum),static_cast<float>(next->volume.defaultValue),{}});
+        next->volumeTarget=next->volumeCurrent=next->volume.Evaluate(next->volume.defaultValue);
+        const double rate=next->models.front()->GetExpectedSampleRate();
+        next->volumeAlpha=1-std::exp(-1/(.005*(rate>0 ? rate : 48000)));
+    }
     next->metadata = source.value("metadata", nlohmann::json::object());
     if (!next->metadata.is_object()) next->metadata = nlohmann::json::object();
     next->UpdateGain();
@@ -107,7 +126,7 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
 const std::vector<ControlSpec>& ParametricModel::GetControls() const { return impl->specs; }
 std::span<const float> ParametricModel::GetControlValues() const
 {
-    return impl->controls.at(impl->active)->GetParams();
+    return impl->volume.enabled ? std::span<const float>(impl->values) : impl->controls.at(impl->active)->GetParams();
 }
 void ParametricModel::SetControlValues(std::span<const float> values)
 {
@@ -121,7 +140,17 @@ void ParametricModel::SetControlValues(std::span<const float> values)
             (s.IsSwitch() && (v != std::floor(v) || v < 0 || v >= s.positions.size())))
             throw std::invalid_argument("PNAM control value outside its range");
     }
-    for (auto* control : impl->controls) control->SetParams(values);
+    if (impl->volume.enabled) {
+        bool changed=false;
+        size_t n=0;
+        for (size_t i=0;i<values.size();++i) if (i!=impl->volume.index) {
+            changed |= impl->neuralValues[n]!=values[i];
+            impl->neuralValues[n++]=values[i];
+        }
+        if (changed) for (auto* control:impl->controls) control->SetParams(impl->neuralValues);
+        std::copy(values.begin(),values.end(),impl->values.begin());
+        impl->volumeTarget=impl->volume.Evaluate(values[impl->volume.index]);
+    } else for (auto* control : impl->controls) control->SetParams(values);
 }
 const nlohmann::json& ParametricModel::GetMetadataJson() const { return impl->metadata; }
 bool ParametricModel::HasInputCalibration() const { return impl->HasNumber("input_level_dbu"); }
@@ -176,7 +205,13 @@ void ParametricModel::Process(const float* input, float* output, size_t samples)
         auto* in = const_cast<float*>(input);
         auto* out = output;
         model->process(&in, &out, count);
-        if (impl->outputGain != 1)
+        if (impl->volume.enabled) {
+            for (int i=0;i<count;++i) {
+                impl->volumeCurrent += impl->volumeAlpha*(impl->volumeTarget-impl->volumeCurrent);
+                if (std::abs(impl->volumeTarget-impl->volumeCurrent)<1e-9) impl->volumeCurrent=impl->volumeTarget;
+                output[i] *= static_cast<float>(impl->volumeCurrent)*impl->outputGain;
+            }
+        } else if (impl->outputGain != 1)
             for (int i = 0; i < count; ++i) output[i] *= impl->outputGain;
         input += count; output += count; samples -= count;
     }

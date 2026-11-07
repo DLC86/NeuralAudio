@@ -21,6 +21,37 @@ std::unique_ptr<ParametricModel> Load(nlohmann::json source, NeuralAudio::Neural
     return std::unique_ptr<ParametricModel>(p);
 }
 
+void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader& loader) {
+    auto source=base;
+    const nlohmann::json curve={{"schema_version",1},{"name","Volume"},{"index",1},
+        {"min",0.},{"max",10.},{"default",5.},{"interpolation","pchip"},
+        {"points",{{0.,0.},{10.,1.}}},
+        {"segments",{{{"left",0.},{"right",10.},{"coefficients",{0.,0.,.1,0.}}}}}};
+    source["architecture"]="ParametricOutputGain";
+    source["config"]={{"base_architecture",base["architecture"]},
+        {"base_config",base["config"]},{"output_gain",curve}};
+    for (float quality : {1.f,.5f}) {
+        auto model=Load(source,loader), reference=Load(base,loader);
+        model->SetQualityScaleFactor(quality); reference->SetQualityScaleFactor(quality);
+        model->SetOutputMode(OutputMode::Raw); reference->SetOutputMode(OutputMode::Raw);
+        Check(model->GetControls().size()==3 && model->GetControls()[1].name=="Volume","Volume UI order");
+        model->SetControlValues(std::vector<float>{2,5,0});
+        reference->SetControlValues(std::vector<float>{2,0});
+        model->Prewarm(); reference->Prewarm();
+        std::vector<float> input(4096,.1f), actual(4096), expected(4096);
+        model->Process(input.data(),actual.data(),4096);
+        reference->Process(input.data(),expected.data(),4096);
+        for (size_t i=0;i<actual.size();++i)
+            Check(std::abs(actual[i]-.5f*expected[i])<2e-5,"Volume must scale output after neural processing");
+        model->SetControlValues(std::vector<float>{2,0,0});
+        model->Process(input.data(),actual.data(),4096);
+        Check(std::abs(actual.back())<1e-7,"Smoothed volume must reach mute");
+        bool rejected=false;
+        try { model->SetControlValues(std::vector<float>{2,11,0}); } catch (...) {rejected=true;}
+        Check(rejected && model->GetControlValues()[1]==0,"Invalid volume changed controls");
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         Check(argc == 2, "Usage: pnam_test <fixtures>");
@@ -29,6 +60,7 @@ int main(int argc, char** argv) {
         const auto input = manifest.at("input").get<std::vector<float>>();
         NeuralAudio::NeuralModelLoader loader;
         loader.SetDefaultMaxAudioBufferSize(257);
+        TestOutputVolume(Read(dir/"hyper_a2_low_rank.nam"),loader);
         double maximum = 0;
         for (const auto& test : manifest.at("cases")) {
             const auto source = Read(dir / test.at("model").get<std::string>());

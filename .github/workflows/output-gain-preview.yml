@@ -1,0 +1,53 @@
+name: Output gain preview packages
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Configure
+        run: cmake -S . -B build/pnam -DBUILD_RTNEURAL=OFF -DBUILD_INTERNAL_STATIC_WAVENET=OFF -DBUILD_STATIC_INTERNAL_NAMA2=OFF -DBUILD_PNAM_TESTS=ON -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build/pnam --config Release --parallel 2
+      - name: Verify portable runtime
+        run: ctest --test-dir build/pnam -C Release --output-on-failure
+      - name: Package tested library and headers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TARGET: ${{ matrix.os }}
+        run: |
+          python3 - <<'PY'
+          import os, pathlib, shutil, subprocess, zipfile
+          root = pathlib.Path('build/pnam')
+          package = pathlib.Path('dist/NeuralAudio-0.1.4')
+          package.mkdir(parents=True)
+          for folder in ('NeuralAudio', 'NeuralAudioCAPI'):
+              for p in pathlib.Path(folder).glob('*.h'):
+                  dst=package/p
+                  dst.parent.mkdir(parents=True,exist_ok=True)
+                  shutil.copy2(p,dst)
+          for p in root.rglob('*'):
+              if p.is_file() and (p.suffix in ('.dll','.so','.dylib','.a','.lib') or p.name in ('pnam_render','pnam_render.exe')):
+                  dst=package/'lib'/p.name
+                  dst.parent.mkdir(exist_ok=True)
+                  shutil.copy2(p,dst)
+          for name in ('README.md','LICENSE'):
+              if pathlib.Path(name).is_file(): shutil.copy2(name,package/name)
+          shutil.copy2('Examples/PnamRender.c',package/'PnamRender.c')
+          archive=pathlib.Path('dist')/('NeuralAudio-0.1.4-'+os.environ['TARGET']+'.zip')
+          with zipfile.ZipFile(archive,'w',zipfile.ZIP_DEFLATED) as z:
+              for p in package.rglob('*'):
+                  if p.is_file(): z.write(p,p.relative_to(package.parent))
+          subprocess.run(['gh','release','upload','v0.1.4-preview',str(archive),'--clobber'],check=True)
+          PY

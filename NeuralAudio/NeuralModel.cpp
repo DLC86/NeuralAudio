@@ -350,7 +350,7 @@ namespace NeuralAudio
 #ifdef BUILD_PNAM
         const auto architecture = modelJson.value("architecture", std::string());
         if ((extension == ".nam" || extension == ".pnam") &&
-            (architecture == "HyperA2" || architecture == "HyperWaveNet" || architecture == "ConcatWaveNet"))
+            (architecture == "HyperA2" || architecture == "HyperWaveNet" || architecture == "ConcatWaveNet" || architecture == "ParametricOutputGain"))
         {
             auto model = std::make_unique<ParametricModel>();
             model->SetModelLoader(this);
