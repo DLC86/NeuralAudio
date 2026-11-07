@@ -1,6 +1,8 @@
 name: Output gain preview packages
 on:
   workflow_dispatch:
+  push:
+    branches: [release/output-gain-preview]
 permissions:
   contents: write
 jobs:
