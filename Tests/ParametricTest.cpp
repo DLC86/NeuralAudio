@@ -62,6 +62,45 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
         Check(rejected && model->GetControlValues()[1]==0,"Invalid volume changed controls");
       }
     }
+
+    // UI indices are independent of the hypernetwork's fixed positional encoding.
+    // Position 0 is the second neural control, position 1 is Volume, position 2
+    // is the first neural control. Exercise both quality branches and API mapping.
+    auto indexed = newExtended;
+    indexed["config"]["params"][0]["index"] = 2;
+    indexed["config"]["params"][1]["index"] = 0;
+    for (auto& child : indexed["config"]["submodels"])
+        child["config"]["params"] = indexed["config"]["params"];
+    for (float quality : {1.f, .5f}) {
+        auto sorted = Load(indexed, loader), reference = Load(base, loader);
+        sorted->SetQualityScaleFactor(quality);
+        reference->SetQualityScaleFactor(quality);
+        sorted->SetOutputMode(OutputMode::Raw);
+        reference->SetOutputMode(OutputMode::Raw);
+        Check(sorted->GetControls()[0].name == base["config"]["params"][1]["name"] &&
+              sorted->GetControls()[1].name == "Volume" &&
+              sorted->GetControls()[2].name == base["config"]["params"][0]["name"],
+              "NeuralAudio did not honor shared visual indices");
+        sorted->SetControlValues(std::vector<float>{0, 5, 2});
+        reference->SetControlValues(std::vector<float>{2, 0});
+        const auto displayed = sorted->GetControlValues();
+        Check(displayed.size() == 3 && displayed[0] == 0 && displayed[1] == 5 &&
+              displayed[2] == 2, "Displayed control values do not follow indices");
+        sorted->Prewarm();
+        reference->Prewarm();
+        std::vector<float> input(4096, .1f), actual(4096), expected(4096);
+        sorted->Process(input.data(), actual.data(), input.size());
+        reference->Process(input.data(), expected.data(), input.size());
+        for (size_t i = 0; i < actual.size(); ++i)
+            Check(std::abs(actual[i] - .5f * expected[i]) < 2e-5,
+                  "Control display mapping changed audio");
+    }
+    auto invalidIndices = indexed;
+    invalidIndices["config"]["params"][0]["index"] = 0;  // duplicate
+    bool invalidRejected = false;
+    try { auto ignored = Load(invalidIndices, loader); } catch (...) { invalidRejected = true; }
+    Check(invalidRejected, "Duplicate display indices were accepted");
+
     // A container without any extensions must still load and have exactly the
     // same audio and controls as the historical HyperA2 container.
     auto modernBase=base;
