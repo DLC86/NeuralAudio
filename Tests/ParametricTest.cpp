@@ -77,9 +77,9 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
         reference->SetQualityScaleFactor(quality);
         sorted->SetOutputMode(OutputMode::Raw);
         reference->SetOutputMode(OutputMode::Raw);
-        Check(sorted->GetControls()[0].name == base["config"]["params"][1]["name"] &&
+        Check(sorted->GetControls()[0].name == base["config"]["params"][1]["name"].get<std::string>() &&
               sorted->GetControls()[1].name == "Volume" &&
-              sorted->GetControls()[2].name == base["config"]["params"][0]["name"],
+              sorted->GetControls()[2].name == base["config"]["params"][0]["name"].get<std::string>(),
               "NeuralAudio did not honor shared visual indices");
         sorted->SetControlValues(std::vector<float>{0, 5, 2});
         reference->SetControlValues(std::vector<float>{2, 0});
@@ -110,8 +110,8 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
     for (auto& child : neuralOnly["config"]["submodels"])
         child["config"]["params"] = neuralOnly["config"]["params"];
     auto orderedNeural = Load(neuralOnly, loader);
-    Check(orderedNeural->GetControls()[0].name == base["config"]["params"][1]["name"] &&
-          orderedNeural->GetControls()[1].name == base["config"]["params"][0]["name"],
+    Check(orderedNeural->GetControls()[0].name == base["config"]["params"][1]["name"].get<std::string>() &&
+          orderedNeural->GetControls()[1].name == base["config"]["params"][0]["name"].get<std::string>(),
           "Neural-only display order was not applied");
     orderedNeural->SetControlValues(std::vector<float>{0, 2});
     Check(orderedNeural->GetControlValues()[0] == 0 &&
