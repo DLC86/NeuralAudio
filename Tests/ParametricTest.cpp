@@ -101,6 +101,23 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
     try { auto ignored = Load(invalidIndices, loader); } catch (...) { invalidRejected = true; }
     Check(invalidRejected, "Duplicate display indices were accepted");
 
+
+    // The optional order works equally well without a volume extension.
+    auto neuralOnly = base;
+    neuralOnly["architecture"] = "ParametricSlimmableContainer";
+    neuralOnly["config"]["params"][0]["index"] = 1;
+    neuralOnly["config"]["params"][1]["index"] = 0;
+    for (auto& child : neuralOnly["config"]["submodels"])
+        child["config"]["params"] = neuralOnly["config"]["params"];
+    auto orderedNeural = Load(neuralOnly, loader);
+    Check(orderedNeural->GetControls()[0].name == base["config"]["params"][1]["name"] &&
+          orderedNeural->GetControls()[1].name == base["config"]["params"][0]["name"],
+          "Neural-only display order was not applied");
+    orderedNeural->SetControlValues(std::vector<float>{0, 2});
+    Check(orderedNeural->GetControlValues()[0] == 0 &&
+          orderedNeural->GetControlValues()[1] == 2,
+          "Neural-only displayed values were not mapped");
+
     // A container without any extensions must still load and have exactly the
     // same audio and controls as the historical HyperA2 container.
     auto modernBase=base;
