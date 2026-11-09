@@ -24,8 +24,36 @@ struct OutputGainCurve {
     auto result = source;
     result["architecture"] = source.at("config").at("base_architecture");
     result["config"] = source.at("config").at("base_config");
-    if (result["architecture"] != "HyperA2" && result["architecture"] != "HyperWaveNet")
-      throw std::runtime_error("Output gain requires HyperA2 or HyperWaveNet");
+    if (result["architecture"] != "HyperA2" &&
+        result["architecture"] != "HyperWaveNet" &&
+        result["architecture"] != "ParametricSlimmableContainer")
+      throw std::runtime_error("Output gain requires a supported parametric model");
+    return result;
+  }
+
+  static const nlohmann::json* FindConfig(const nlohmann::json& source) {
+    // Historic models wrap the neural network; new models preserve its
+    // architecture and place their optional output stage alongside weights.
+    if (source.at("architecture") == "ParametricOutputGain")
+      return &source.at("config").at("output_gain");
+    const auto ext = source.find("extensions");
+    if (ext == source.end()) return nullptr;
+    if (!ext->is_object())
+      throw std::runtime_error("Invalid parametric model extensions");
+    const auto curve = ext->find("linear_volume");
+    return curve == ext->end() ? nullptr : &*curve;
+  }
+
+  static nlohmann::json NeuralSource(const nlohmann::json& source) {
+    auto result = Unwrap(source);
+    // The neural DSP never consumes the extra volume stage. Strip just that
+    // extension before constructing a legacy HyperWaveNet child or baking.
+    if (result.contains("extensions")) {
+      if (!result["extensions"].is_object())
+        throw std::runtime_error("Invalid parametric model extensions");
+      result["extensions"].erase("linear_volume");
+      if (result["extensions"].empty()) result.erase("extensions");
+    }
     return result;
   }
 
