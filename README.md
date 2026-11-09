@@ -1,6 +1,139 @@
-> **PNAM hardware fork:** supports HyperA2 Full/Lite, HyperWaveNet and ConcatWaveNet, with knob/switch controls, complete metadata, and Raw/Calibrated/Normalized/Auto output modes. See [PNAM integration guide](PNAM.md) and [C example](Examples/PnamRender.c).
+# NeuralAudio — DLC86 fork (v0.1.5)
 
-# NeuralAudio
+This is [DLC86's fork](https://github.com/DLC86/NeuralAudio) of
+[Mike Oliphant's NeuralAudio](https://github.com/mikeoliphant/NeuralAudio).
+The upstream project is a fast, portable C++ library for neural amp models,
+including static NAM WaveNet/A1/A2, LSTM, and RTNeural models. **Those original
+capabilities are retained**; the changes below are specific to this fork.
+
+The main addition is a portable **parametric NAM (.pnam) inference runtime**,
+designed for desktop and embedded Linux hosts that need to expose and change
+knobs, switches, model quality, and playback calibration without flattening
+the neural model to a fixed setting.
+
+For a complete comparison with upstream, see the
+[upstream → fork diff](https://github.com/mikeoliphant/NeuralAudio/compare/main...DLC86:NeuralAudio:main).
+For implementation details, see the [PNAM integration guide](PNAM.md) and
+[standalone C example](Examples/PnamRender.c).
+
+## What this fork adds or changes compared with upstream
+
+### 1. Parametric model loading and backwards-compatible formats
+
+- Loads **HyperWaveNet** (full and low-rank hypernetworks),
+  **ConcatWaveNet**, and the original nested **HyperA2** Full/Lite format.
+- Loads the newer **`ParametricSlimmableContainer`** name while retaining
+  support for existing `HyperA2` exports. Both container names use the
+  existing Full/Lite neural architecture internally; there is no retraining or
+  weight conversion just to change the top-level name.
+- Supports legacy **`ParametricOutputGain`** wrappers and the new optional
+  **`extensions.linear_volume`** in a root-level `.pnam` object. Neural
+  `config.params` and the network weights remain unchanged by this extension.
+- Models without a volume extension continue to behave as before. Updated
+  runtimes read old formats, but an older player that knows only `HyperA2`
+  will **not** recognize `ParametricSlimmableContainer` automatically.
+
+### 2. Runtime knobs, switches and Linear Volume DSP
+
+- Enumerates continuous knobs and any number of categorical switches, with
+  name, limits, default value, number of positions and position labels.
+- Allows validated parameter changes **without recreating the neural network**;
+  the parametric NAM Core updates conditioned weights and retains the running
+  convolution history. Rejects invalid counts, out-of-range knob values and
+  invalid switch positions rather than applying a partial update.
+- A measured **Linear Volume** control may be exposed beside the neural
+  controls. Its monotonic PCHIP curve is applied **after** the network as a
+  separate output-gain stage, with smoothed changes to avoid clicks. It does
+  not modify hypernetwork input dimensions or weights.
+- This is a **mono neural inference path**. Host-side audio I/O, external
+  resampling and host automation synchronization remain the host's
+  responsibility.
+
+### 3. Full/Lite selection and the parametric fast path
+
+- Supports Full (default) and Lite variants of nested parametric models
+  through the quality-scaling interface. Both use the same visible controls.
+- Uses the pinned parametric NAM Core fork with A2-specialized kernels and
+  small-block, multi-frame weight reuse when the model topology supports it;
+  otherwise it falls back to the general parametric backend.
+- Prepares and processes **only the active size**, rather than running two
+  networks at once. Switching Full/Lite and calling `Prewarm()` are
+  **not real-time-safe** operations; perform these outside the audio callback.
+- Audio runs on arbitrary block sizes up to the prepared maximum, with
+  internal splitting for larger requests and no additional block accumulation.
+
+### 4. Metadata, calibration and output loudness
+
+- Adds `Raw`, `Calibrated`, `Normalized` and `Auto` output modes for
+  parametric models. The selected output gain is applied **inside
+  `Process()`**, not returned for the host to apply a second time.
+- Calibrated uses exported interface/output dBu metadata. Normalized targets
+  **−18 dB** based on exported loudness. Auto chooses the appropriate mode
+  using the model's `gear_type`; missing/nonfinite metadata safely falls
+  back to Raw without inventing calibration values.
+- Exposes requested versus effective output modes, calibration input level,
+  and the full original metadata JSON, including custom and nested fields
+  such as per-size training/validation statistics.
+
+### 5. Expanded C API for portable/embedded hosts
+
+The existing `NeuralAudioCAPI` gains:
+`CreateModelFromFileUtf8`, `IsParametric`, `PnamGetControlCount`,
+`PnamGetControlName`, `PnamGetControlRange`, `PnamGetPositionCount`,
+`PnamGetPositionName`, `PnamSetControls`, `PnamSetOutputMode`,
+`PnamGetOutputMode`, `PnamGetEffectiveOutputMode`,
+`PnamSetCalibrationLevelDBu`, `PnamHasLite`, `PnamSetLite` and
+`PnamGetMetadataJson`.
+
+The C header is usable from C and C++ and is designed for hardware hosts.
+The new setters report success/failure; metadata queries support a
+length-first buffer protocol and never write a truncated JSON result.
+`Examples/PnamRender.c` demonstrates the complete C workflow.
+
+### 6. Build, dependencies and regression coverage
+
+- Adds `BUILD_PNAM` and `BUILD_PNAM_TESTS` CMake options, building the PNAM
+  C++ runtime, C API and test/example executables without requiring JUCE,
+  Python, CUDA or training libraries. PNAM requires `BUILD_NAMCORE=ON` and
+  `NAM_ENABLE_A2_FAST=ON`. The C++ runtime requires **C++20**.
+- Pins a parametric NAM Core submodule rather than using upstream NeuralAudio's
+  original NAM Core revision. The upstream dependencies and their licenses
+  remain credited; always clone **recursively**.
+- Adds checked-in synthetic Full/Lite and switch-coverage fixtures, C++ and C
+  integration tests, plus CI for **Windows x64, Linux x64, macOS, and Linux
+  ARM64**. CI verifies output calibration, audio against golden references,
+  Full/Lite selection, switch combinations, metadata, and new/legacy Linear
+  Volume layouts. These tests do **not** assert a device-specific real-time
+  CPU benchmark.
+- Includes portable PNAM-specific workflows and an optional output-gain
+  preview packaging workflow. The main build workflow continues to exercise
+  the original project; the PNAM workflow runs its own cross-platform suite.
+
+### Build and integration quick start
+
+```sh
+git clone --recursive https://github.com/DLC86/NeuralAudio.git
+cd NeuralAudio
+cmake -S . -B build/pnam -DCMAKE_BUILD_TYPE=Release \
+  -DBUILD_RTNEURAL=OFF -DBUILD_INTERNAL_STATIC_WAVENET=OFF \
+  -DBUILD_STATIC_INTERNAL_NAMA2=OFF -DBUILD_PNAM_TESTS=ON
+cmake --build build/pnam --config Release --parallel 2
+ctest --test-dir build/pnam -C Release --output-on-failure
+```
+
+This fork is a **runtime library**, not a VST3 plugin, standalone amp-sim
+application, model trainer or complete hardware firmware. For plugin binaries,
+see the separate [NAM Parametric Plugin](https://github.com/DLC86/NamParametricPlugin).
+For detailed host integration, control/threading contracts, output modes,
+performance scope and C API usage, consult [PNAM.md](PNAM.md).
+
+---
+
+## Original NeuralAudio documentation
+
+The following sections describe Mike Oliphant's original APIs and behavior,
+which remain available in this fork. Parametric model behavior specific to
+this fork is documented above and in PNAM.md.
 
 NeuralAudio is a C++ library designed to make it easy to use neural network machine learning models (ie: guitar amplifier captures/profiles) in real-time audio applications.
 
@@ -198,11 +331,11 @@ This method is only supported for "internal" and NAM Core models. For RTNeural i
 
 First clone the repository:
 ```bash
-git clone --recurse-submodules https://github.com/mikeoliphant/NeuralAudio
+git clone --recurse-submodules https://github.com/DLC86/NeuralAudio.git
 cd NeuralAudio/build
 ```
 
-Then compile the plugin using:
+Then compile the library using:
 
 **Linux/MacOS**
 ```bash
