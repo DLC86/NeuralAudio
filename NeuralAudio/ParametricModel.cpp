@@ -70,8 +70,11 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     auto next = std::make_unique<Impl>();
     next->requested = impl->requested;
     next->outputLevel = impl->outputLevel;
-    const auto base=pnam::OutputGainCurve::Unwrap(source);
-    const bool a2 = base.at("architecture") == "HyperA2";
+    const auto* gainConfig = pnam::OutputGainCurve::FindConfig(source);
+    const auto base=pnam::OutputGainCurve::NeuralSource(source);
+    const auto architecture = base.at("architecture").get<std::string>();
+    const bool a2 = architecture == "HyperA2" ||
+                    architecture == "ParametricSlimmableContainer";
     nam::ScopedPrewarmOnResetDefault noPrewarm(false);
     for (int i = 0; i < (a2 ? 2 : 1); ++i)
     {
@@ -96,8 +99,8 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     next->active = next->models.size() - 1; // Full is the default, independent of export preference.
     for (const auto& spec : next->controls.front()->GetParamSpecs())
         next->specs.push_back({spec.name, spec.min, spec.max, spec.defaultValue, spec.enum_names});
-    if (source.at("architecture")=="ParametricOutputGain") {
-        next->volume.Load(source.at("config").at("output_gain"),next->specs.size());
+    if (gainConfig) {
+        next->volume.Load(*gainConfig,next->specs.size());
         for (const auto& s:next->specs) if (s.name==next->volume.name)
             throw std::runtime_error("Output volume is already a neural control");
         const auto params=next->controls.front()->GetParams();
