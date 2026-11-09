@@ -27,11 +27,22 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
         {"min",0.},{"max",10.},{"default",5.},{"interpolation","pchip"},
         {"points",{{0.,0.},{10.,1.}}},
         {"segments",{{{"left",0.},{"right",10.},{"coefficients",{0.,0.,.1,0.}}}}}};
-    source["architecture"]="ParametricOutputGain";
-    source["config"]={{"base_architecture",base["architecture"]},
-        {"base_config",base["config"]},{"output_gain",curve}};
-    for (float quality : {1.f,.5f}) {
-        auto model=Load(source,loader), reference=Load(base,loader);
+    const auto oldWrapped = [&] {
+        auto wrapped = base;
+        wrapped["architecture"]="ParametricOutputGain";
+        wrapped["config"]={{"base_architecture",base["architecture"]},
+            {"base_config",base["config"]},{"output_gain",curve}};
+        return wrapped;
+    }();
+    const auto newExtended = [&] {
+        auto extended = base;
+        extended["architecture"]="ParametricSlimmableContainer";
+        extended["extensions"]["linear_volume"]=curve;
+        return extended;
+    }();
+    for (const auto& encoded : {oldWrapped, newExtended}) {
+      for (float quality : {1.f,.5f}) {
+        auto model=Load(encoded,loader), reference=Load(base,loader);
         model->SetQualityScaleFactor(quality); reference->SetQualityScaleFactor(quality);
         model->SetOutputMode(OutputMode::Raw); reference->SetOutputMode(OutputMode::Raw);
         Check(model->GetControls().size()==3 && model->GetControls()[1].name=="Volume","Volume UI order");
@@ -49,7 +60,24 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
         bool rejected=false;
         try { model->SetControlValues(std::vector<float>{2,11,0}); } catch (...) {rejected=true;}
         Check(rejected && model->GetControlValues()[1]==0,"Invalid volume changed controls");
+      }
     }
+    // A container without any extensions must still load and have exactly the
+    // same audio and controls as the historical HyperA2 container.
+    auto modernBase=base;
+    modernBase["architecture"]="ParametricSlimmableContainer";
+    auto modern=Load(modernBase,loader), legacy=Load(base,loader);
+    Check(modern->GetControls().size()==legacy->GetControls().size(),
+          "Renamed container changed neural controls");
+    modern->SetOutputMode(OutputMode::Raw);
+    legacy->SetOutputMode(OutputMode::Raw);
+    modern->Prewarm(); legacy->Prewarm();
+    std::vector<float> input(4096,.1f), actual(4096), expected(4096);
+    modern->Process(input.data(),actual.data(),4096);
+    legacy->Process(input.data(),expected.data(),4096);
+    for (size_t i=0;i<actual.size();++i)
+        Check(std::abs(actual[i]-expected[i])<2e-5,
+              "Renamed container must preserve HyperA2 neural audio");
 }
 
 int main(int argc, char** argv) {
