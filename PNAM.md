@@ -17,6 +17,23 @@ backend. Weight updates reuse allocated buffers and preserve convolution history
 the network is not recreated when controls move. This is not a conversion of a
 PNAM into one frozen static model.
 
+## Optional control display indices
+
+Current ParaNAM Trainer exports may set a zero-based `index` on every
+`config.params[]` neural control. These positions share one sequence
+with `extensions.linear_volume.index`, if present. The PNAM adapter sorts
+`GetControls()` and `GetControlValues()` into this visual order and
+expects `SetControlValues()` in the same order. It maps values back to
+the original positional neural input order before conditioning weights.
+No weights, parameter types or model calculations change. The C API
+control enumeration and setter follow the same order.
+
+Older PNAMs without neural indices keep their historical ordering. New
+files must supply a complete, unique `0..N-1` display permutation
+(including Linear Volume when present). Inconsistent indices are rejected
+rather than silently changing the sound. The `index` field is UI/API
+metadata, not the hypernetwork input position.
+
 ## Build
 
 Requires a C++20 compiler and CMake 3.20 or later. No JUCE, Python, CUDA, or training
