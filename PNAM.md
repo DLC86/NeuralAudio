@@ -1,9 +1,14 @@
 # PNAM runtime for hardware integrations
 
 This fork adds `.pnam` and legacy parametric `.nam` loading to NeuralAudio.
-Supported architectures: HyperA2 (nested Full + Lite), HyperWaveNet (full and
-low-rank hypernetworks), and ConcatWaveNet. Knobs and any number of independent
-switches are exposed with their ranges, defaults, position counts and labels.
+Supported architectures: `ParametricSlimmableContainer` (new nested Full + Lite
+container), legacy `HyperA2` (the same Full/Lite networks), `HyperWaveNet`
+(full and low-rank hypernetworks), and `ConcatWaveNet`. Existing
+`ParametricOutputGain` wrappers and newer optional
+`extensions.linear_volume` curves are also supported. Knobs and any number
+of independent switches are exposed with ranges, defaults, position counts
+and labels. Linear Volume is an independent PCHIP attenuation stage applied
+after the neural network with gain smoothing, not another hypernetwork input.
 
 The PNAM backend uses the shared parametric NAM Core fork. Compatible HyperA2
 branches select the specialized A2 kernels, including NeuralAudio-style
@@ -58,7 +63,8 @@ pnam->SetOutputMode(NeuralAudio::OutputMode::Auto);
 model->Process(input, output, numFrames);
 ```
 
-The loader defaults to Full. For a nested HyperA2, select Lite with
+The loader defaults to Full. For a nested `HyperA2` or
+`ParametricSlimmableContainer`, select Lite with
 `SetQualityScaleFactor(0.5f)` or Full with `SetQualityScaleFactor(1.0f)`.
 All controls are retained in both variants. Size changes are **offline** operations:
 stop the callback, select the size, call `Prewarm()`, then restart audio. The
@@ -127,7 +133,9 @@ The callback itself is still `Process()`. Do not apply output compensation again
 
 ## Validation and deployment scope
 
-Tests cover PyTorch golden audio for full/low-rank HyperA2 Full and Lite, all 30
+Tests cover PyTorch golden audio for full/low-rank HyperA2 Full and Lite,
+the renamed ParametricSlimmableContainer, legacy and extension-based Linear
+Volume attenuation, all 30
 combinations of three switches (3 × 2 × 5) mixed with two knobs, HyperWaveNet and
 ConcatWaveNet, requested/effective output modes, rendered output gain, unknown and
 missing metadata, and both C and C++ APIs. Fixtures are synthetic random-weight
