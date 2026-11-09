@@ -1,5 +1,6 @@
 #include "ParametricModel.h"
 
+#include <algorithm>
 #include <array>
 #include <cctype>
 #include <cmath>
@@ -19,6 +20,9 @@ struct ParametricModel::Impl
     std::vector<ControlSpec> specs;
     pnam::OutputGainCurve volume;
     std::vector<float> values, neuralValues;
+    // Optional display-order mapping. Neural weights always use original indices.
+    std::vector<size_t> displayToNative;
+    std::vector<float> displayValues;
     double volumeTarget=1,volumeCurrent=1,volumeAlpha=1;
     nlohmann::json metadata = nlohmann::json::object();
     size_t active = 0;
@@ -113,6 +117,44 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
         const double rate=next->models.front()->GetExpectedSampleRate();
         next->volumeAlpha=1-std::exp(-1/(.005*(rate>0 ? rate : 48000)));
     }
+    // New files can assign a single presentation index across neural controls
+    // and Linear Volume. Older files without neural indices remain unchanged.
+    const auto& stored = base.at("config").at("params");
+    const bool indexed = std::any_of(stored.begin(), stored.end(),
+        [](const nlohmann::json& entry) { return entry.contains("index"); });
+    if (indexed) {
+        const size_t count = next->specs.size();
+        if (stored.size() + (next->volume.enabled ? 1u : 0u) != count)
+            throw std::runtime_error("PNAM display control count mismatch");
+        next->displayToNative.resize(count);
+        std::vector<bool> seen(count, false);
+        size_t neural = 0;
+        for (size_t native = 0; native < count; ++native) {
+            size_t display = native;
+            if (!next->volume.enabled || native != next->volume.index) {
+                const auto& entry = stored.at(neural++);
+                if (!entry.contains("index") || !entry.at("index").is_number_integer())
+                    throw std::runtime_error("PNAM requires all neural display indices");
+                const int pos = entry.at("index").get<int>();
+                if (pos < 0 || static_cast<size_t>(pos) >= count)
+                    throw std::runtime_error("PNAM display index outside range");
+                display = static_cast<size_t>(pos);
+            }
+            if (seen[display]) throw std::runtime_error("Duplicate PNAM display index");
+            seen[display] = true;
+            next->displayToNative[display] = native;
+        }
+        const auto nativeSpecs = next->specs;
+        const auto rawValues = next->volume.enabled
+            ? std::span<const float>(next->values)
+            : next->controls.front()->GetParams();
+        next->displayValues.resize(count);
+        for (size_t display = 0; display < count; ++display) {
+            const size_t native = next->displayToNative[display];
+            next->specs[display] = nativeSpecs[native];
+            next->displayValues[display] = rawValues[native];
+        }
+    }
     next->metadata = source.value("metadata", nlohmann::json::object());
     if (!next->metadata.is_object()) next->metadata = nlohmann::json::object();
     next->UpdateGain();
@@ -129,6 +171,7 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
 const std::vector<ControlSpec>& ParametricModel::GetControls() const { return impl->specs; }
 std::span<const float> ParametricModel::GetControlValues() const
 {
+    if (!impl->displayToNative.empty()) return impl->displayValues;
     return impl->volume.enabled ? std::span<const float>(impl->values) : impl->controls.at(impl->active)->GetParams();
 }
 void ParametricModel::SetControlValues(std::span<const float> values)
@@ -143,17 +186,27 @@ void ParametricModel::SetControlValues(std::span<const float> values)
             (s.IsSwitch() && (v != std::floor(v) || v < 0 || v >= s.positions.size())))
             throw std::invalid_argument("PNAM control value outside its range");
     }
+    std::vector<float> reordered;
+    std::span<const float> nativeValues = values;
+    if (!impl->displayToNative.empty()) {
+        reordered.resize(values.size());
+        for (size_t display = 0; display < values.size(); ++display)
+            reordered[impl->displayToNative[display]] = values[display];
+        nativeValues = reordered;
+    }
     if (impl->volume.enabled) {
         bool changed=false;
         size_t n=0;
-        for (size_t i=0;i<values.size();++i) if (i!=impl->volume.index) {
-            changed |= impl->neuralValues[n]!=values[i];
-            impl->neuralValues[n++]=values[i];
+        for (size_t i=0;i<nativeValues.size();++i) if (i!=impl->volume.index) {
+            changed |= impl->neuralValues[n]!=nativeValues[i];
+            impl->neuralValues[n++]=nativeValues[i];
         }
         if (changed) for (auto* control:impl->controls) control->SetParams(impl->neuralValues);
-        std::copy(values.begin(),values.end(),impl->values.begin());
-        impl->volumeTarget=impl->volume.Evaluate(values[impl->volume.index]);
-    } else for (auto* control : impl->controls) control->SetParams(values);
+        std::copy(nativeValues.begin(),nativeValues.end(),impl->values.begin());
+        impl->volumeTarget=impl->volume.Evaluate(nativeValues[impl->volume.index]);
+    } else for (auto* control : impl->controls) control->SetParams(nativeValues);
+    if (!impl->displayToNative.empty())
+        impl->displayValues.assign(values.begin(), values.end());
 }
 const nlohmann::json& ParametricModel::GetMetadataJson() const { return impl->metadata; }
 bool ParametricModel::HasInputCalibration() const { return impl->HasNumber("input_level_dbu"); }
