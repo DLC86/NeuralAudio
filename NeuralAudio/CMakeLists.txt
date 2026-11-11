@@ -189,6 +189,15 @@ if(BUILD_NAMCORE AND BUILD_PNAM)
         message(FATAL_ERROR "PNAM direct-kernel patch failed: ${PNAM_DIRECT_ERROR}")
     endif()
     message(STATUS "${PNAM_DIRECT_OUTPUT}")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../patches/apply-neuralaudio-fast-smoothing.py"
+                "${PNAM_CORE_PATH}"
+        RESULT_VARIABLE PNAM_A2_RESULT
+        OUTPUT_VARIABLE PNAM_A2_OUTPUT ERROR_VARIABLE PNAM_A2_ERROR)
+    if(NOT PNAM_A2_RESULT EQUAL 0)
+        message(FATAL_ERROR "PNAM A2 fast-kernel smoothing patch failed: ${PNAM_A2_ERROR}")
+    endif()
+    message(STATUS "${PNAM_A2_OUTPUT}")
 endif()
 
 if(BUILD_NAMCORE)
