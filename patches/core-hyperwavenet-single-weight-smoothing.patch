@@ -1,0 +1,183 @@
+diff --git a/NAM/wavenet/hyperwavenet.h b/NAM/wavenet/hyperwavenet.h
+--- a/NAM/wavenet/hyperwavenet.h
++++ b/NAM/wavenet/hyperwavenet.h
+@@ -19,13 +19,13 @@
+ 
+ /// WaveNet whose weights are regenerated from the controls by a hypernetwork.
+ ///
+-/// This model does NOT smooth (see IParametricControl). Its controls reach the audio only by
+-/// regenerating weights, and weights can only change between process() calls, so its transfer
+-/// function is quantised to the block grid no matter what. Ramping does not remove that
+-/// discontinuity, only relocate it -- from the host's control-commit rate up to the block
+-/// rate, where it is a clearly audible tone -- while regenerating the whole weight set every
+-/// block. It was implemented, measured and removed; do not add it back without measuring both
+-/// the spectrum and the cost. test_hyperwavenet_applies_immediately() carries the numbers.
++/// By default this model does not smooth: every changed control vector regenerates
++/// and installs the complete weight set before the next process() call.
++/// The optional plugin-side weight interpolation is explicitly enabled through
++/// ConfigureWeightSmoothing(). Unlike older control-parameter ramps (which
++/// recalculated the hypernetwork every block), it runs the hypernetwork only
++/// once per destination and interpolates *weights*, with one DSP network.
++
+ class HyperWaveNet : public WaveNet, public IParametricControl
+ {
+ public:
+@@ -46,6 +46,13 @@
+ 
+   void process(NAM_SAMPLE** input, NAM_SAMPLE** output, int num_frames) override;
+ 
++  // Opt-in, allocation-free single-network weight interpolation. The
++  // hypernetwork runs once per SetParams; intermediate updates only load
++  // interpolated weights into the *same* WaveNet. 0 disables smoothing.
++  // Intended for model sample rate. The host must serialize this with process.
++  void ConfigureWeightSmoothing(int transition_frames, int step_frames) noexcept;
++  [[nodiscard]] bool HasActiveWeightSmoothing() const noexcept;
++
+ private:
+   std::vector<ParamSpec> _param_specs;
+   std::vector<float> _params;
+@@ -52,6 +59,15 @@
+   std::vector<float> _base_weights;
+   std::vector<float> _conditioned;
++  std::vector<float> _smoothed_weights;
++  std::vector<float> _start_weights;
+   nam::Hypernetwork _hypernet;
++  std::vector<NAM_SAMPLE*> _smooth_input_ptrs;
++  std::vector<NAM_SAMPLE*> _smooth_output_ptrs;
++  bool _has_applied_weights = false;
++  int _smooth_frames = 0;
++  int _smooth_step_frames = 1;
++  int _smooth_step_remaining = 0;
++  int _smooth_position = 0;
+   bool _dirty = true;
+   int _param_dim = 0;
+   mutable std::atomic_flag _debug_param_api_active = ATOMIC_FLAG_INIT;
+diff --git a/NAM/wavenet/hyperwavenet.cpp b/NAM/wavenet/hyperwavenet.cpp
+--- a/NAM/wavenet/hyperwavenet.cpp
++++ b/NAM/wavenet/hyperwavenet.cpp
+@@ -165,7 +165,11 @@
+ , _params(nominal_from_specs(_param_specs))
+ , _base_weights(std::move(base_weights))
+ , _conditioned(_base_weights)
++, _smoothed_weights(_base_weights)
++, _start_weights(_base_weights)
+ , _hypernet(hypernet_spec, _param_specs, hypernet_state)
++, _smooth_input_ptrs(static_cast<size_t>(NumInputChannels()))
++, _smooth_output_ptrs(static_cast<size_t>(NumOutputChannels()))
+ , _dirty(true)
+ , _param_dim(static_cast<int>(_param_specs.size()))
+ {
+@@ -206,17 +210,111 @@
+   return _param_specs;
+ }
+ 
++void HyperWaveNet::ConfigureWeightSmoothing(const int transition_frames, const int step_frames) noexcept
++{
++  const bool was_enabled = _smooth_frames > 0;
++  _smooth_frames = std::max(0, transition_frames);
++  _smooth_step_frames = std::max(1, step_frames);
++  _smooth_step_remaining = 0;
++  if (_smooth_frames == 0)
++    _smooth_position = 0; // process() commits the pending target without interpolation.
++  else if (!was_enabled)
++    _smooth_position = _smooth_frames; // Merely enabling smoothing must not trigger a ramp.
++}
++
++bool HyperWaveNet::HasActiveWeightSmoothing() const noexcept
++{
++  return _smooth_frames > 0 && _has_applied_weights && _smooth_position < _smooth_frames;
++}
++
+ void HyperWaveNet::process(NAM_SAMPLE** input, NAM_SAMPLE** output, const int num_frames)
+ {
+   DebugParamApiGuard guard(_debug_param_api_active);
++  if (num_frames <= 0) return;
+ 
+   if (_dirty)
+   {
++    // Only ONE expensive hypernetwork evaluation for the new destination.
+     _hypernet.ApplyConditioning(_base_weights, _params, _conditioned);
+-    WaveNet::set_weights_(_conditioned);
++    if (!_has_applied_weights || _smooth_frames == 0)
++    {
++      // Initial model state, Reset/prewarm and Crossfade retain exact weights.
++      std::copy(_conditioned.begin(), _conditioned.end(), _smoothed_weights.begin());
++      WaveNet::set_weights_(_smoothed_weights);
++      _has_applied_weights = true;
++      _smooth_position = _smooth_frames;
++    }
++    else if (_smoothed_weights == _conditioned)
++    {
++      // Different control positions can generate identical weights. Avoid
++      // needless segmentation and preserve sample-exact unchanged audio.
++      _smooth_position = _smooth_frames;
++    }
++    else
++    {
++      // A second request during a ramp starts from the current *audible*
++      // weight vector. No second audio network or allocation is required.
++      std::copy(_smoothed_weights.begin(), _smoothed_weights.end(), _start_weights.begin());
++      _smooth_position = 0;
++      _smooth_step_remaining = 0;
++    }
+     _dirty = false;
+   }
+-  WaveNet::process(input, output, num_frames);
++
++  if (_smooth_frames == 0)
++  {
++    // Switching from Eco to Crossfade commits any still-ramping target.
++    if (_has_applied_weights && _smoothed_weights != _conditioned)
++    {
++      std::copy(_conditioned.begin(), _conditioned.end(), _smoothed_weights.begin());
++      WaveNet::set_weights_(_smoothed_weights);
++    }
++    WaveNet::process(input, output, num_frames);
++    return;
++  }
++  if (!HasActiveWeightSmoothing())
++  {
++    WaveNet::process(input, output, num_frames);
++    return;
++  }
++
++  int offset = 0;
++  while (offset < num_frames && _smooth_position < _smooth_frames)
++  {
++    if (_smooth_step_remaining == 0)
++    {
++      // Keep a fixed 0.5 ms grid across host/resampler blocks, so short
++      // buffers do not force an expensive coefficient reload every call.
++      const float position = static_cast<float>(_smooth_position) / static_cast<float>(_smooth_frames);
++      const float alpha = position * position * (3.0f - 2.0f * position);
++      for (size_t i = 0; i < _smoothed_weights.size(); ++i)
++        _smoothed_weights[i] = _start_weights[i] + alpha * (_conditioned[i] - _start_weights[i]);
++      WaveNet::set_weights_(_smoothed_weights);
++      _smooth_step_remaining = std::min(_smooth_step_frames, _smooth_frames - _smooth_position);
++    }
++    const int step = std::min(num_frames - offset, _smooth_step_remaining);
++    for (size_t ch = 0; ch < _smooth_input_ptrs.size(); ++ch)
++      _smooth_input_ptrs[ch] = input[ch] + offset;
++    for (size_t ch = 0; ch < _smooth_output_ptrs.size(); ++ch)
++      _smooth_output_ptrs[ch] = output[ch] + offset;
++    WaveNet::process(_smooth_input_ptrs.data(), _smooth_output_ptrs.data(), step);
++    offset += step;
++    _smooth_position += step;
++    _smooth_step_remaining -= step;
++    if (_smooth_position == _smooth_frames)
++    {
++      std::copy(_conditioned.begin(), _conditioned.end(), _smoothed_weights.begin());
++      WaveNet::set_weights_(_smoothed_weights);
++    }
++  }
++  if (offset < num_frames)
++  {
++    for (size_t ch = 0; ch < _smooth_input_ptrs.size(); ++ch)
++      _smooth_input_ptrs[ch] = input[ch] + offset;
++    for (size_t ch = 0; ch < _smooth_output_ptrs.size(); ++ch)
++      _smooth_output_ptrs[ch] = output[ch] + offset;
++    WaveNet::process(_smooth_input_ptrs.data(), _smooth_output_ptrs.data(), num_frames - offset);
++  }
+ }
+ 
+ std::unique_ptr<DSP> HyperWaveNetConfig::create(std::vector<float> weights, const double sampleRate)

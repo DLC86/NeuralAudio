@@ -153,6 +153,44 @@ set(SOURCES
 	CompositeModel.h
 	TemplateHelper.h)
 
+# PNAM uses one patched NAM Core instance. These upstream-pinned patches
+# install per-sample coefficient interpolation within the existing convolutions.
+option(BUILD_PNAM "Build portable PNAM runtime" ON)
+if(BUILD_NAMCORE AND BUILD_PNAM)
+    set(PNAM_CORE_PATH "${CMAKE_CURRENT_LIST_DIR}/../deps/NeuralAmpModelerCore")
+    set(PNAM_SMOOTH_PATCH "${CMAKE_CURRENT_LIST_DIR}/../patches/core-hyperwavenet-single-weight-smoothing.patch")
+    if(NOT EXISTS "${PNAM_CORE_PATH}/NAM/kernel_weight_smoothing.h")
+        execute_process(
+            COMMAND git -C "${PNAM_CORE_PATH}" apply --reverse --check "${PNAM_SMOOTH_PATCH}"
+            RESULT_VARIABLE PNAM_SMOOTH_INSTALLED OUTPUT_QUIET ERROR_QUIET)
+        if(NOT PNAM_SMOOTH_INSTALLED EQUAL 0)
+            execute_process(
+                COMMAND git -C "${PNAM_CORE_PATH}" apply --check "${PNAM_SMOOTH_PATCH}"
+                RESULT_VARIABLE PNAM_PATCH_OK ERROR_VARIABLE PNAM_PATCH_ERROR)
+            if(NOT PNAM_PATCH_OK EQUAL 0)
+                message(FATAL_ERROR "PNAM smoothing baseline patch cannot apply: ${PNAM_PATCH_ERROR}")
+            endif()
+            execute_process(
+                COMMAND git -C "${PNAM_CORE_PATH}" apply "${PNAM_SMOOTH_PATCH}"
+                RESULT_VARIABLE PNAM_APPLY_OK)
+            if(NOT PNAM_APPLY_OK EQUAL 0)
+                message(FATAL_ERROR "PNAM smoothing baseline patch failed")
+            endif()
+        endif()
+    endif()
+
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../patches/apply-direct-kernel-smoothing.py"
+                "${PNAM_CORE_PATH}"
+        RESULT_VARIABLE PNAM_DIRECT_RESULT
+        OUTPUT_VARIABLE PNAM_DIRECT_OUTPUT ERROR_VARIABLE PNAM_DIRECT_ERROR)
+    if(NOT PNAM_DIRECT_RESULT EQUAL 0)
+        message(FATAL_ERROR "PNAM direct-kernel patch failed: ${PNAM_DIRECT_ERROR}")
+    endif()
+    message(STATUS "${PNAM_DIRECT_OUTPUT}")
+endif()
+
 if(BUILD_NAMCORE)
     file(GLOB NAM_SOURCES CONFIGURE_DEPENDS
         ../deps/NeuralAmpModelerCore/NAM/*.cpp
