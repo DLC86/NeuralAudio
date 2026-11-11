@@ -17,6 +17,16 @@ backend. Weight updates reuse allocated buffers and preserve convolution history
 the network is not recreated when controls move. This is not a conversion of a
 PNAM into one frozen static model.
 
+The default HyperWaveNet behavior in this fork uses a **single audio network**.
+Target weights are updated at most once every **100 ms** of model-sample time,
+and the coefficients inside each convolution are **interpolated linearly per
+sample** over **100 ms**. The two intervals are independently configurable,
+without retraining or changing the exported model. Full/Lite variants keep
+separate update clocks. A2 fast kernels retain their original optimized
+stationary processing path, using a separate single-network sample-ramped
+kernel path only while a control is moving. ConcatWaveNet keeps its existing
+control smoothing because it has no hypernetwork-generated weights.
+
 ## Optional control display indices
 
 Current ParaNAM Trainer exports may set a zero-based `index` on every
@@ -36,8 +46,9 @@ metadata, not the hypernetwork input position.
 
 ## Build
 
-Requires a C++20 compiler and CMake 3.20 or later. No JUCE, Python, CUDA, or training
-dependencies are needed. Initialize the pinned dependencies when cloning:
+Requires a C++20 compiler and CMake 3.20 or later. No JUCE, CUDA, or training
+dependencies are needed. Python 3 is needed only while configuring CMake to
+apply the idempotent pinned-core patches; not on deployed systems. Initialize the pinned dependencies when cloning:
 
 ```sh
 git clone --recursive https://github.com/DLC86/NeuralAudio.git
@@ -74,7 +85,11 @@ auto values = std::vector<float>(pnam->GetControlValues().begin(),
                                  pnam->GetControlValues().end());
 pnam->SetControlValues(values);
 pnam->SetAudioInputLevelDBu(12.0f); // same interface calibration reference as NAM On Steroids
+// Output Mode is Auto by default for ALL model architectures; this is optional:
 pnam->SetOutputMode(NeuralAudio::OutputMode::Auto);
+// Independent timings; both default to 100 ms and can be set separately:
+pnam->SetWeightUpdateIntervalMs(100.0f);
+pnam->SetWeightSmoothingMs(100.0f);
 
 // Process at GetSampleRate(). Input/output are mono buffers.
 model->Process(input, output, numFrames);
@@ -95,7 +110,11 @@ concurrently with processing. Switch values are zero-based integer indices;
 invalid values are rejected without changing any controls. Arbitrary block lengths
 are processed immediately, internally splitting at the prepared maximum; there
 is no extra block-buffering latency. Hosts supply sample-rate conversion, audio
-I/O, and any desired smoothing/de-click during automation.
+I/O. HyperWaveNet smoothing is handled internally by per-sample linear kernel
+interpolation; no host-side de-click is needed for those weight changes. The
+host still owns automation timing and any desired extra de-click for other
+models/controls. The interpolation intervals are model-sample-clock based,
+not wall-clock based. Longer ramp times make controls respond more gradually.
 
 ## Output modes and calibration
 
@@ -106,9 +125,9 @@ model loudness value, with the same −18 dB target as NAM On Steroids.
 | Requested mode | Applied gain in dB | Missing/invalid metadata |
 | --- | --- | --- |
 | Raw | 0 | Raw |
-| Calibrated (default) | `output_level_dbu - interface calibration` | Raw |
+| Calibrated | `output_level_dbu - interface calibration` | Raw |
 | Normalized | `-18 - loudness` | Raw |
-| Auto | Normalized for `amp`, `pedal_amp`, `amp_cab`, `amp_pedal_cab`; Calibrated for other/unknown gear types | Raw if the selected mode lacks its metadata |
+| Auto (default) | Normalized for `amp`, `pedal_amp`, `amp_cab`, `amp_pedal_cab`; Calibrated for other/unknown gear types | Raw if the selected mode lacks its metadata |
 
 Gear type matching is case-insensitive. Auto follows NAM On Steroids; it does not
 silently substitute Calibrated if an amp lacks loudness, or Normalized if a pedal
@@ -137,9 +156,14 @@ Include `NeuralAudioCAPI/NeuralAudioCApi.h` (valid C and C++). Use
 `CreateModelFromFileUtf8()`, then `IsParametric()`. New PNAM functions include:
 
 - `PnamGetControlCount/Name/Range`, `PnamGetPositionCount/Name`, `PnamSetControls`.
+- `PnamSetWeightUpdateIntervalMs`, `PnamSetWeightSmoothingMs` (default 100/100 ms; independent, linear).
 - `PnamSetOutputMode` with `PNAM_RAW`, `PNAM_CALIBRATED`, `PNAM_NORMALIZED`, `PNAM_AUTO`.
 - `PnamGetOutputMode`, `PnamGetEffectiveOutputMode`, `PnamSetCalibrationLevelDBu`.
 - `PnamHasLite`, `PnamSetLite` (offline, also prewarms), and `PnamGetMetadataJson`.
+- `SetModelOutputMode`, `GetModelOutputMode`,
+  `GetModelEffectiveOutputMode` apply to static and parametric models.
+  For static models the host applies the returned gain via
+  `GetRecommendedOutputDBAdjustment()`; PNAM already applies gain in Process().
 
 Setters return 1 on success and 0 on error. Name pointers remain valid until the
 model is destroyed. Metadata retrieval returns the required buffer size including

@@ -1,4 +1,4 @@
-# NeuralAudio — DLC86 fork (v0.1.5)
+# NeuralAudio — DLC86 fork (v0.1.6)
 
 This is [DLC86's fork](https://github.com/DLC86/NeuralAudio) of
 [Mike Oliphant's NeuralAudio](https://github.com/mikeoliphant/NeuralAudio).
@@ -41,6 +41,14 @@ For implementation details, see the [PNAM integration guide](PNAM.md) and
   the parametric NAM Core updates conditioned weights and retains the running
   convolution history. Rejects invalid counts, out-of-range knob values and
   invalid switch positions rather than applying a partial update.
+- Hypernetwork weight updates are rate-limited by model-sample time and
+  **interpolated linearly at every sample directly inside the convolution kernels**
+  while the knobs move, with just one active audio network. Developers configure
+  the two intervals independently using `SetWeightUpdateIntervalMs()` and
+  `SetWeightSmoothingMs()`, both defaulting to **100 ms**. The C API exposes
+  `PnamSetWeightUpdateIntervalMs` and `PnamSetWeightSmoothingMs`.
+  When controls are stationary, the optimized steady-state kernels remain in use.
+  Full and Lite maintain independent update clocks.
 - A measured **Linear Volume** control may be exposed beside the neural
   controls. Its monotonic PCHIP curve is applied **after** the network as a
   separate output-gain stage, with smoothed changes to avoid clicks. It does
@@ -65,8 +73,10 @@ For implementation details, see the [PNAM integration guide](PNAM.md) and
 ### 4. Metadata, calibration and output loudness
 
 - Adds `Raw`, `Calibrated`, `Normalized` and `Auto` output modes for
-  parametric models. The selected output gain is applied **inside
-  `Process()`**, not returned for the host to apply a second time.
+  **all NeuralAudio models**, with **Auto as the default**. For parametric
+  models the selected output gain is applied **inside `Process()`**; for
+  static NAM/Keras models the host applies the gain returned by
+  `GetRecommendedOutputDBAdjustment()` as before. Do not apply it twice.
 - Calibrated uses exported interface/output dBu metadata. Normalized targets
   **−18 dB** based on exported loudness. Auto chooses the appropriate mode
   using the model's `gear_type`; missing/nonfinite metadata safely falls
@@ -78,6 +88,10 @@ For implementation details, see the [PNAM integration guide](PNAM.md) and
 ### 5. Expanded C API for portable/embedded hosts
 
 The existing `NeuralAudioCAPI` gains:
+`SetModelOutputMode`, `GetModelOutputMode`,
+`GetModelEffectiveOutputMode` for all model types, and
+`PnamSetWeightUpdateIntervalMs`, `PnamSetWeightSmoothingMs` for
+parametric timing control, alongside
 `CreateModelFromFileUtf8`, `IsParametric`, `PnamGetControlCount`,
 `PnamGetControlName`, `PnamGetControlRange`, `PnamGetPositionCount`,
 `PnamGetPositionName`, `PnamSetControls`, `PnamSetOutputMode`,
@@ -94,7 +108,9 @@ length-first buffer protocol and never write a truncated JSON result.
 
 - Adds `BUILD_PNAM` and `BUILD_PNAM_TESTS` CMake options, building the PNAM
   C++ runtime, C API and test/example executables without requiring JUCE,
-  Python, CUDA or training libraries. PNAM requires `BUILD_NAMCORE=ON` and
+  CUDA or training libraries. **Python 3 is required at CMake configure time**
+  to apply the idempotent pinned-core interpolation patches; Python is not
+  required at runtime. PNAM requires `BUILD_NAMCORE=ON` and
   `NAM_ENABLE_A2_FAST=ON`. The C++ runtime requires **C++20**.
 - Pins a parametric NAM Core submodule rather than using upstream NeuralAudio's
   original NAM Core revision. The upstream dependencies and their licenses

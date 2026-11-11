@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 
-project(NeuralAudio VERSION 0.1.5)
+project(NeuralAudio VERSION 0.1.6)
 
 option(BUILD_PNAM_TESTS "Build PNAM regression tests and example" ON)
 
