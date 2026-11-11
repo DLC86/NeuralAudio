@@ -337,7 +337,13 @@ void ParametricModel::Process(const float* input, float* output, size_t samples)
             impl->updateCooldown[branch] =
                 impl->SamplesForMs(branch, impl->weightUpdateIntervalMs);
         }
-        const auto count = static_cast<int>(std::min(samples, static_cast<size_t>(impl->blockSize)));
+        int count = static_cast<int>(std::min(samples, static_cast<size_t>(impl->blockSize)));
+        // If another control request is waiting, split exactly at the next
+        // permitted model-sample boundary rather than delaying it to the
+        // following arbitrary host callback/block size.
+        if (impl->smoothers[branch] && impl->controlPending[branch] &&
+            impl->updateCooldown[branch] > 0)
+            count = std::min(count, impl->updateCooldown[branch]);
         auto* in = const_cast<float*>(input);
         auto* out = output;
         model->process(&in, &out, count);
