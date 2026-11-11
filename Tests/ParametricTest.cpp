@@ -137,6 +137,59 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
               "Renamed container must preserve HyperA2 neural audio");
 }
 
+void TestLinearKernelWeightSmoothing(const std::filesystem::path& dir,
+                                     NeuralAudio::NeuralModelLoader& loader) {
+    const auto source = Read(dir / "hyper_a2_low_rank.nam");
+    auto smooth = Load(source, loader);
+    auto chunked = Load(source, loader);
+    auto immediate = Load(source, loader);
+    for (auto* p : {smooth.get(), chunked.get(), immediate.get()}) {
+        p->SetOutputMode(OutputMode::Raw);
+        p->SetWeightUpdateIntervalMs(0); // isolate the interpolation itself
+    }
+    smooth->SetWeightSmoothingMs(100);
+    chunked->SetWeightSmoothingMs(100);
+    immediate->SetWeightSmoothingMs(0);
+    smooth->Prewarm(); chunked->Prewarm(); immediate->Prewarm();
+    std::vector<float> knobs(smooth->GetControlValues().begin(), smooth->GetControlValues().end());
+    bool changed = false;
+    for (size_t i=0; i<knobs.size(); ++i) {
+        const auto& spec = smooth->GetControls()[i];
+        if (!spec.IsSwitch()) {
+            knobs[i] = std::abs(knobs[i] - spec.minimum) > 0.01f
+                ? spec.minimum : spec.maximum;
+            changed = true;
+            break;
+        }
+    }
+    Check(changed, "Smoothing fixture must contain a continuous knob");
+    for (auto* p : {smooth.get(), chunked.get(), immediate.get()})
+        p->SetControlValues(knobs);
+    const size_t n = 24000;
+    std::vector<float> input(n), smoothed(n), segmented(n), direct(n);
+    for (size_t i=0; i<n; ++i)
+        input[i] = 0.16f * std::sin(static_cast<float>(i) * 0.023f);
+    smooth->Process(input.data(), smoothed.data(), n);
+    immediate->Process(input.data(), direct.data(), n);
+    size_t offset = 0;
+    while (offset < n) {
+        const size_t count = std::min(n-offset, static_cast<size_t>(17 + (offset % 251)));
+        chunked->Process(input.data()+offset, segmented.data()+offset, count);
+        offset += count;
+    }
+    float earlyDelta=0, lateDelta=0, blockDelta=0;
+    for (size_t i=0; i<n; ++i) {
+        Check(std::isfinite(smoothed[i]) && std::isfinite(direct[i]) &&
+              std::isfinite(segmented[i]), "Smoothing emitted nonfinite audio");
+        blockDelta=std::max(blockDelta, std::abs(smoothed[i]-segmented[i]));
+        if (i < 4800) earlyDelta=std::max(earlyDelta,std::abs(smoothed[i]-direct[i]));
+        if (i >= n-1000) lateDelta=std::max(lateDelta,std::abs(smoothed[i]-direct[i]));
+    }
+    Check(earlyDelta > 1e-7f, "Linear ramp did not change audio during movement");
+    Check(blockDelta < 2e-5f, "Linear ramp depends on host block partitioning");
+    Check(lateDelta < 2e-5f, "Linear ramp did not converge to exact conditioned weights");
+}
+
 void TestAutoOutputModeAllModels() {
     struct StaticProbe : NeuralAudio::NeuralModelImpl {
         using NeuralAudio::NeuralModelImpl::ReadNAMConfig;
@@ -180,6 +233,7 @@ int main(int argc, char** argv) {
         const auto input = manifest.at("input").get<std::vector<float>>();
         TestAutoOutputModeAllModels();
         NeuralAudio::NeuralModelLoader loader;
+        TestLinearKernelWeightSmoothing(dir, loader);
         loader.SetDefaultMaxAudioBufferSize(257);
         TestOutputVolume(Read(dir/"hyper_a2_low_rank.nam"),loader);
         {
