@@ -68,6 +68,9 @@ NA_EXTERN int PnamGetControlRange(NeuralModel* model, size_t index, float* minim
 NA_EXTERN size_t PnamGetPositionCount(NeuralModel* model, size_t index);
 NA_EXTERN const char* PnamGetPositionName(NeuralModel* model, size_t index, size_t position);
 NA_EXTERN int PnamSetControls(NeuralModel* model, const float* values, size_t count);
+// Developer-configurable, independent milliseconds; default 100/100, linear.
+NA_EXTERN int PnamSetWeightUpdateIntervalMs(NeuralModel* model, float ms);
+NA_EXTERN int PnamSetWeightSmoothingMs(NeuralModel* model, float ms);
 NA_EXTERN int PnamSetOutputMode(NeuralModel* model, int mode);
 NA_EXTERN int PnamGetOutputMode(NeuralModel* model);
 NA_EXTERN int PnamGetEffectiveOutputMode(NeuralModel* model);

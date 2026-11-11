@@ -186,6 +186,16 @@ int main(int argc, char** argv) {
             auto model = Load(Read(dir/"hyper_a2_low_rank.nam"), loader);
             Check(model->GetOutputMode() == OutputMode::Auto,
                   "PNAM default requested output mode must be Auto");
+            Check(model->GetWeightUpdateIntervalMs() == 100.0f &&
+                  model->GetWeightSmoothingMs() == 100.0f,
+                  "PNAM update interval and weight ramp must default to 100/100 ms");
+            model->SetWeightUpdateIntervalMs(50);
+            model->SetWeightSmoothingMs(75);
+            Check(model->GetWeightUpdateIntervalMs() == 50.0f &&
+                  model->GetWeightSmoothingMs() == 75.0f,
+                  "PNAM update and smoothing intervals must be independent");
+            model->SetWeightUpdateIntervalMs(100);
+            model->SetWeightSmoothingMs(100);
         }
         double maximum = 0;
         for (const auto& test : manifest.at("cases")) {

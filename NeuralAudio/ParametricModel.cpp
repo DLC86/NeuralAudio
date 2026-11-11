@@ -9,6 +9,7 @@
 #include <NAM/get_dsp.h>
 #include <NAM/parametric_control.h>
 #include <NAM/wavenet/hyper_a2.h>
+#include <NAM/kernel_weight_smoothing.h>
 #include "OutputGainCurve.h"
 
 namespace NeuralAudio
@@ -17,6 +18,26 @@ struct ParametricModel::Impl
 {
     std::vector<std::unique_ptr<nam::DSP>> models;
     std::vector<nam::IParametricControl*> controls;
+    std::vector<nam::kernel_weight_smoothing::WeightSmoothingControl*> smoothers;
+    std::vector<bool> controlPending, smoothingConfigPending;
+    std::vector<int> updateCooldown;
+    float weightUpdateIntervalMs = 100.0f;
+    float weightSmoothingMs = 100.0f;
+
+    int SamplesForMs(size_t branch, float ms) const
+    {
+        const double rate = models.at(branch)->GetExpectedSampleRate();
+        return std::max(0, static_cast<int>(std::lround(rate * ms / 1000.0)));
+    }
+
+    void ConfigureSmoothing(size_t branch)
+    {
+        auto* smoothing = smoothers.at(branch);
+        if (!smoothing || !smoothingConfigPending[branch] ||
+            smoothing->HasActiveWeightSmoothing()) return;
+        smoothing->ConfigureKernelSmoothing(SamplesForMs(branch, weightSmoothingMs), 2);
+        smoothingConfigPending[branch] = false;
+    }
     std::vector<ControlSpec> specs;
     pnam::OutputGainCurve volume;
     std::vector<float> values, neuralValues;
@@ -74,6 +95,8 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     auto next = std::make_unique<Impl>();
     next->requested = impl->requested;
     next->outputLevel = impl->outputLevel;
+    next->weightUpdateIntervalMs = impl->weightUpdateIntervalMs;
+    next->weightSmoothingMs = impl->weightSmoothingMs;
     const auto* gainConfig = pnam::OutputGainCurve::FindConfig(source);
     const auto base=pnam::OutputGainCurve::NeuralSource(source);
     const auto architecture = base.at("architecture").get<std::string>();
@@ -101,15 +124,24 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
         next->models.push_back(std::move(model));
     }
     next->active = next->models.size() - 1; // Full is the default, independent of export preference.
+    next->smoothers.resize(next->models.size(), nullptr);
+    next->controlPending.resize(next->models.size(), false);
+    next->smoothingConfigPending.resize(next->models.size(), true);
+    next->updateCooldown.resize(next->models.size(), 0);
+    for (size_t i = 0; i < next->models.size(); ++i) {
+        next->smoothers[i] =
+            dynamic_cast<nam::kernel_weight_smoothing::WeightSmoothingControl*>(next->models[i].get());
+        next->ConfigureSmoothing(i);
+    }
     for (const auto& spec : next->controls.front()->GetParamSpecs())
         next->specs.push_back({spec.name, spec.min, spec.max, spec.defaultValue, spec.enum_names});
+    const auto initial = next->controls.front()->GetParams();
+    next->neuralValues.assign(initial.begin(), initial.end());
+    next->values = next->neuralValues;
     if (gainConfig) {
         next->volume.Load(*gainConfig,next->specs.size());
         for (const auto& s:next->specs) if (s.name==next->volume.name)
             throw std::runtime_error("Output volume is already a neural control");
-        const auto params=next->controls.front()->GetParams();
-        next->neuralValues.assign(params.begin(),params.end());
-        next->values=next->neuralValues;
         next->values.insert(next->values.begin()+static_cast<std::ptrdiff_t>(next->volume.index),next->volume.defaultValue);
         next->specs.insert(next->specs.begin()+static_cast<std::ptrdiff_t>(next->volume.index),ControlSpec{
             next->volume.name,static_cast<float>(next->volume.minimum),static_cast<float>(next->volume.maximum),static_cast<float>(next->volume.defaultValue),{}});
@@ -172,7 +204,7 @@ const std::vector<ControlSpec>& ParametricModel::GetControls() const { return im
 std::span<const float> ParametricModel::GetControlValues() const
 {
     if (!impl->displayToNative.empty()) return impl->displayValues;
-    return impl->volume.enabled ? std::span<const float>(impl->values) : impl->controls.at(impl->active)->GetParams();
+    return impl->values;
 }
 void ParametricModel::SetControlValues(std::span<const float> values)
 {
@@ -201,13 +233,49 @@ void ParametricModel::SetControlValues(std::span<const float> values)
             changed |= impl->neuralValues[n]!=nativeValues[i];
             impl->neuralValues[n++]=nativeValues[i];
         }
-        if (changed) for (auto* control:impl->controls) control->SetParams(impl->neuralValues);
+        if (changed)
+            for (size_t i=0;i<impl->controls.size();++i) {
+                if (impl->smoothers[i]) impl->controlPending[i] = true;
+                else impl->controls[i]->SetParams(impl->neuralValues);
+            }
         std::copy(nativeValues.begin(),nativeValues.end(),impl->values.begin());
         impl->volumeTarget=impl->volume.Evaluate(nativeValues[impl->volume.index]);
-    } else for (auto* control : impl->controls) control->SetParams(nativeValues);
+    } else {
+        const bool changed = !std::equal(nativeValues.begin(), nativeValues.end(),
+                                         impl->neuralValues.begin());
+        if (changed) {
+            impl->neuralValues.assign(nativeValues.begin(), nativeValues.end());
+            impl->values = impl->neuralValues;
+            for (size_t i=0;i<impl->controls.size();++i) {
+                if (impl->smoothers[i]) impl->controlPending[i] = true;
+                else impl->controls[i]->SetParams(nativeValues);
+            }
+        }
+    }
     if (!impl->displayToNative.empty())
         impl->displayValues.assign(values.begin(), values.end());
 }
+void ParametricModel::SetWeightUpdateIntervalMs(const float ms)
+{
+    if (!std::isfinite(ms) || ms < 0 || ms > 10000)
+        throw std::invalid_argument("Weight-update interval must be 0..10000 ms");
+    impl->weightUpdateIntervalMs = ms;
+    for (size_t i=0;i<impl->updateCooldown.size();++i)
+        impl->updateCooldown[i] = std::min(impl->updateCooldown[i], impl->SamplesForMs(i, ms));
+}
+void ParametricModel::SetWeightSmoothingMs(const float ms)
+{
+    if (!std::isfinite(ms) || ms < 0 || ms > 10000)
+        throw std::invalid_argument("Weight smoothing must be 0..10000 ms");
+    impl->weightSmoothingMs = ms;
+    for (size_t i=0;i<impl->smoothers.size();++i) {
+        impl->smoothingConfigPending[i] = true;
+        impl->ConfigureSmoothing(i);
+    }
+}
+float ParametricModel::GetWeightUpdateIntervalMs() const { return impl->weightUpdateIntervalMs; }
+float ParametricModel::GetWeightSmoothingMs() const { return impl->weightSmoothingMs; }
+
 const nlohmann::json& ParametricModel::GetMetadataJson() const { return impl->metadata; }
 bool ParametricModel::HasInputCalibration() const { return impl->HasNumber("input_level_dbu"); }
 bool ParametricModel::HasOutputCalibration() const { return impl->HasNumber("output_level_dbu"); }
@@ -257,6 +325,18 @@ void ParametricModel::Process(const float* input, float* output, size_t samples)
     auto& model = impl->models.at(impl->active);
     while (samples)
     {
+        impl->ConfigureSmoothing(impl->active);
+        // One hypernetwork evaluation per configured update window. Pending
+        // host moves collapse to the latest destination, independently of
+        // the kernel ramp. This uses model-sample time, not wall-clock time.
+        const size_t branch = impl->active;
+        if (impl->smoothers[branch] && impl->controlPending[branch] &&
+            impl->updateCooldown[branch] == 0) {
+            impl->controls[branch]->SetParams(impl->neuralValues);
+            impl->controlPending[branch] = false;
+            impl->updateCooldown[branch] =
+                impl->SamplesForMs(branch, impl->weightUpdateIntervalMs);
+        }
         const auto count = static_cast<int>(std::min(samples, static_cast<size_t>(impl->blockSize)));
         auto* in = const_cast<float*>(input);
         auto* out = output;
@@ -269,13 +349,22 @@ void ParametricModel::Process(const float* input, float* output, size_t samples)
             }
         } else if (impl->outputGain != 1)
             for (int i = 0; i < count; ++i) output[i] *= impl->outputGain;
+        if (impl->smoothers[branch])
+            impl->updateCooldown[branch] =
+                std::max(0, impl->updateCooldown[branch] - count);
         input += count; output += count; samples -= count;
     }
 }
 void ParametricModel::Prewarm()
 {
-    for (auto& model : impl->models)
+    for (size_t i=0;i<impl->models.size();++i)
     {
+        auto& model = impl->models[i];
+        // Prewarm is explicitly offline; commit all pending controls and
+        // reset the ramp before generating history for reproducible fixtures.
+        impl->controls[i]->SetParams(impl->neuralValues);
+        impl->controlPending[i] = false;
+        impl->updateCooldown[i] = 0;
         // Reset commits ConcatWaveNet's control ramps as well as audio history.
         // Prewarm is offline, including after a Full/Lite switch.
         model->Reset(model->GetExpectedSampleRate(), impl->blockSize);

@@ -203,6 +203,21 @@ int PnamSetControls(NeuralModel* model, const float* values, size_t count) {
     return 0;
 #endif
 }
+int PnamSetWeightUpdateIntervalMs(NeuralModel* model, float ms) {
+#ifdef BUILD_PNAM
+    return WithPnam(model, [&](auto& p) { p.SetWeightUpdateIntervalMs(ms); });
+#else
+    (void)model; (void)ms; return 0;
+#endif
+}
+int PnamSetWeightSmoothingMs(NeuralModel* model, float ms) {
+#ifdef BUILD_PNAM
+    return WithPnam(model, [&](auto& p) { p.SetWeightSmoothingMs(ms); });
+#else
+    (void)model; (void)ms; return 0;
+#endif
+}
+
 int PnamSetOutputMode(NeuralModel* model, int mode) {
 #ifdef BUILD_PNAM
     return WithPnam(model, [&](auto& p) { p.SetOutputMode(static_cast<NeuralAudio::OutputMode>(mode)); });

@@ -25,6 +25,13 @@ public:
     const std::vector<ControlSpec>& GetControls() const;
     std::span<const float> GetControlValues() const;
     void SetControlValues(std::span<const float> values);
+    // Independent, model-sample-time cadence and ramp (milliseconds). Both
+    // default to 100 ms. HyperWaveNet uses linear per-sample coefficient ramps.
+    // Call these setters between Process() calls, not concurrently with audio.
+    void SetWeightUpdateIntervalMs(float ms);
+    void SetWeightSmoothingMs(float ms);
+    [[nodiscard]] float GetWeightUpdateIntervalMs() const;
+    [[nodiscard]] float GetWeightSmoothingMs() const;
     const nlohmann::json& GetMetadataJson() const;
     bool HasInputCalibration() const;
     bool HasOutputCalibration() const;
