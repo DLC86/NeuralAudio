@@ -48,6 +48,11 @@ NA_EXTERN void SetMaxAudioBufferSize(NeuralModel* model, int maxSize);
 NA_EXTERN float GetRecommendedInputDBAdjustment(NeuralModel* model);
 
 NA_EXTERN float GetRecommendedOutputDBAdjustment(NeuralModel* model);
+// Output mode is Auto by default for all model types; the host applies the
+// returned trim for static models, while PNAM applies it within Process().
+NA_EXTERN int SetModelOutputMode(NeuralModel* model, int mode);
+NA_EXTERN int GetModelOutputMode(NeuralModel* model);
+NA_EXTERN int GetModelEffectiveOutputMode(NeuralModel* model);
 
 NA_EXTERN float GetSampleRate(NeuralModel* model);
 

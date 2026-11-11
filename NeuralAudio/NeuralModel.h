@@ -3,6 +3,9 @@
 #include <filesystem>
 #include <istream>
 #include <algorithm>
+#include <cmath>
+#include <cctype>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "json.hpp"
@@ -17,6 +20,8 @@
 
 namespace NeuralAudio
 {
+	enum class OutputMode { Raw, Calibrated, Normalized, Auto };
+
 	enum EModelLoadMode
 	{
 		Internal,
@@ -89,9 +94,53 @@ namespace NeuralAudio
 			return audioInputLevelDBu - modelInputLevelDBu;
 		}
 
+		virtual void SetOutputMode(OutputMode mode)
+		{
+			if (mode != OutputMode::Raw && mode != OutputMode::Calibrated &&
+			    mode != OutputMode::Normalized && mode != OutputMode::Auto)
+				throw std::invalid_argument("Invalid output mode");
+			outputMode = mode;
+		}
+
+		virtual OutputMode GetOutputMode() const { return outputMode; }
+
+		virtual OutputMode GetEffectiveOutputMode() const
+		{
+			auto effective = outputMode;
+			if (effective == OutputMode::Auto) {
+				if (kerasModel)
+					effective = OutputMode::Normalized; // preserve Keras out_gain
+				else {
+					std::string gear;
+					auto it = std::find_if(metadata.begin(), metadata.end(),
+						[](const auto& item) { return item.first == "gear_type"; });
+					if (it != metadata.end()) {
+						gear = it->second;
+						if (gear.size() >= 2 && gear.front() == '"' && gear.back() == '"')
+							gear = gear.substr(1, gear.size() - 2);
+						std::transform(gear.begin(), gear.end(), gear.begin(),
+							[](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+					}
+					effective = (gear == "amp" || gear == "pedal_amp" ||
+					             gear == "amp_cab" || gear == "amp_pedal_cab")
+						? OutputMode::Normalized : OutputMode::Calibrated;
+				}
+			}
+			if ((effective == OutputMode::Normalized && !hasLoudness) ||
+			    (effective == OutputMode::Calibrated && !hasOutputCalibration))
+				return OutputMode::Raw;
+			return effective;
+		}
+
+		// The host applies this trim for static models; PNAM applies it in
+		// Process() and deliberately returns 0 to prevent double gain.
 		virtual float GetRecommendedOutputDBAdjustment()
 		{
-			return -18 - modelLoudnessDB;
+			switch (GetEffectiveOutputMode()) {
+				case OutputMode::Calibrated: return modelOutputLevelDBu - audioInputLevelDBu;
+				case OutputMode::Normalized: return -18.0f - modelLoudnessDB;
+				default: return 0;
+			}
 		}
 
 		virtual float GetSampleRate()
@@ -140,6 +189,8 @@ namespace NeuralAudio
 		float modelInputLevelDBu = 12;
 		float modelOutputLevelDBu = 12;
 		float modelLoudnessDB = -18;
+		OutputMode outputMode = OutputMode::Auto;
+		bool hasLoudness = false, hasOutputCalibration = false, kerasModel = false;
 		float sampleRate = 48000;
 		std::string modelVersion = "";
 		std::vector<std::pair<std::string, std::string>> metadata;

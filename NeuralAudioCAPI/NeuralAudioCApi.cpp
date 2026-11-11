@@ -103,6 +103,23 @@ float GetRecommendedOutputDBAdjustment(NeuralModel* model)
 	return model->model->GetRecommendedOutputDBAdjustment();
 }
 
+int SetModelOutputMode(NeuralModel* model, int mode)
+{
+    if (!model || !model->model) return 0;
+    try {
+        model->model->SetOutputMode(static_cast<NeuralAudio::OutputMode>(mode));
+        return 1;
+    } catch (...) { return 0; }
+}
+int GetModelOutputMode(NeuralModel* model)
+{
+    return model && model->model ? static_cast<int>(model->model->GetOutputMode()) : -1;
+}
+int GetModelEffectiveOutputMode(NeuralModel* model)
+{
+    return model && model->model ? static_cast<int>(model->model->GetEffectiveOutputMode()) : -1;
+}
+
 float GetSampleRate(NeuralModel* model)
 {
 	return model->model->GetSampleRate();

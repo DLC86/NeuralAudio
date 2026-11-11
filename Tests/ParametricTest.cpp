@@ -2,6 +2,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include "NeuralAudio/NeuralModelImpl.h"
 #include <stdexcept>
 
 using NeuralAudio::OutputMode;
@@ -136,12 +137,48 @@ void TestOutputVolume(const nlohmann::json& base, NeuralAudio::NeuralModelLoader
               "Renamed container must preserve HyperA2 neural audio");
 }
 
+void TestAutoOutputModeAllModels() {
+    struct StaticProbe : NeuralAudio::NeuralModelImpl {
+        using NeuralAudio::NeuralModelImpl::ReadNAMConfig;
+        using NeuralAudio::NeuralModelImpl::ReadKerasConfig;
+    };
+    StaticProbe amp;
+    amp.ReadNAMConfig(nlohmann::json{{"version","0.9.0"},
+        {"metadata",{{"gear_type","amp"},{"loudness",-14.0f},{"output_level_dbu",6.0f}}}});
+    Check(amp.GetOutputMode() == OutputMode::Auto &&
+          amp.GetEffectiveOutputMode() == OutputMode::Normalized &&
+          std::abs(amp.GetRecommendedOutputDBAdjustment() + 4.f) < 1e-6f,
+          "Static AMP Auto normalization");
+    amp.SetOutputMode(OutputMode::Calibrated);
+    Check(std::abs(amp.GetRecommendedOutputDBAdjustment() + 6.f) < 1e-6f,
+          "Explicit Calibrated output");
+    StaticProbe pedal;
+    pedal.ReadNAMConfig(nlohmann::json{{"version","0.9.0"},
+        {"metadata",{{"gear_type","pedal"},{"output_level_dbu",15.f}}}});
+    Check(pedal.GetOutputMode() == OutputMode::Auto &&
+          pedal.GetEffectiveOutputMode() == OutputMode::Calibrated &&
+          std::abs(pedal.GetRecommendedOutputDBAdjustment() - 3.f) < 1e-6f,
+          "Static pedal Auto calibration");
+    StaticProbe missing;
+    missing.ReadNAMConfig(nlohmann::json{{"version","0.9.0"}});
+    Check(missing.GetEffectiveOutputMode() == OutputMode::Raw &&
+          missing.GetRecommendedOutputDBAdjustment() == 0.f,
+          "Missing calibration metadata falls back to Raw");
+    StaticProbe keras;
+    keras.ReadKerasConfig(nlohmann::json{{"out_gain",3.5f}});
+    Check(keras.GetOutputMode() == OutputMode::Auto &&
+          keras.GetEffectiveOutputMode() == OutputMode::Normalized &&
+          std::abs(keras.GetRecommendedOutputDBAdjustment() - 3.5f) < 1e-6f,
+          "Keras out_gain Auto compatibility");
+}
+
 int main(int argc, char** argv) {
     try {
         Check(argc == 2, "Usage: pnam_test <fixtures>");
         const std::filesystem::path dir(argv[1]);
         const auto manifest = Read(dir / "manifest.json");
         const auto input = manifest.at("input").get<std::vector<float>>();
+        TestAutoOutputModeAllModels();
         NeuralAudio::NeuralModelLoader loader;
         loader.SetDefaultMaxAudioBufferSize(257);
         TestOutputVolume(Read(dir/"hyper_a2_low_rank.nam"),loader);

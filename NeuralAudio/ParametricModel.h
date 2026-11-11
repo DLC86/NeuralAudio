@@ -6,8 +6,6 @@
 
 namespace NeuralAudio
 {
-enum class OutputMode { Raw, Calibrated, Normalized, Auto };
-
 struct ControlSpec
 {
     std::string name;
@@ -32,9 +30,9 @@ public:
     bool HasOutputCalibration() const;
     bool HasLoudness() const;
 
-    void SetOutputMode(OutputMode mode);
-    OutputMode GetOutputMode() const;
-    OutputMode GetEffectiveOutputMode() const;
+    void SetOutputMode(OutputMode mode) override;
+    OutputMode GetOutputMode() const override;
+    OutputMode GetEffectiveOutputMode() const override;
     void SetAudioInputLevelDBu(float level) override;
     float GetOutputGainDB() const;
     float GetRecommendedInputDBAdjustment() override;

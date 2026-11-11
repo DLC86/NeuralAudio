@@ -30,6 +30,8 @@ namespace NeuralAudio
 			void ReadNAMConfig(const nlohmann::json& modelJson)
 			{
 				modelVersion = modelJson.at("version");
+				kerasModel = false;
+				hasLoudness = hasOutputCalibration = false;
 
 				if (modelJson.contains("sample_rate") && modelJson.at("sample_rate").is_number())
 				{
@@ -44,7 +46,11 @@ namespace NeuralAudio
 
 					if (metadataJson.contains("loudness") && metadataJson.at("loudness").is_number())
 					{
-						modelLoudnessDB = (float)metadataJson.at("loudness");
+						const float value = metadataJson.at("loudness").get<float>();
+						if (std::isfinite(value)) {
+							modelLoudnessDB = value;
+							hasLoudness = true;
+						}
 					}
 
 					if (metadataJson.contains("input_level_dbu") && metadataJson.at("input_level_dbu").is_number())
@@ -54,13 +60,19 @@ namespace NeuralAudio
 
 					if (metadataJson.contains("output_level_dbu") && metadataJson.at("output_level_dbu").is_number())
 					{
-						modelOutputLevelDBu = metadataJson.at("output_level_dbu");
+						const float value = metadataJson.at("output_level_dbu").get<float>();
+						if (std::isfinite(value)) {
+							modelOutputLevelDBu = value;
+							hasOutputCalibration = true;
+						}
 					}
 				}
 			}
 
 			void ReadKerasConfig(const nlohmann::json& modelJson)
 			{
+				kerasModel = true;
+				hasLoudness = hasOutputCalibration = false;
 				if (modelJson.contains("samplerate") && modelJson.at("samplerate").is_number())
 				{
 					sampleRate = modelJson.at("samplerate");
@@ -73,7 +85,11 @@ namespace NeuralAudio
 
 				if (modelJson.contains("out_gain") && modelJson.at("out_gain").is_number())
 				{
-					modelLoudnessDB = -18 - (float)modelJson.at("out_gain");
+					const float value = modelJson.at("out_gain").get<float>();
+					if (std::isfinite(value)) {
+						modelLoudnessDB = -18 - value;
+						hasLoudness = true;
+					}
 				}
 			}
 
