@@ -145,6 +145,11 @@ int main(int argc, char** argv) {
         NeuralAudio::NeuralModelLoader loader;
         loader.SetDefaultMaxAudioBufferSize(257);
         TestOutputVolume(Read(dir/"hyper_a2_low_rank.nam"),loader);
+        {
+            auto model = Load(Read(dir/"hyper_a2_low_rank.nam"), loader);
+            Check(model->GetOutputMode() == OutputMode::Auto,
+                  "PNAM default requested output mode must be Auto");
+        }
         double maximum = 0;
         for (const auto& test : manifest.at("cases")) {
             const auto source = Read(dir / test.at("model").get<std::string>());

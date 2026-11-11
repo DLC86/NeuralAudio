@@ -28,7 +28,7 @@ struct ParametricModel::Impl
     size_t active = 0;
     int blockSize = 128;
     float outputLevel = 12, outputGain = 1;
-    OutputMode requested = OutputMode::Calibrated;
+    OutputMode requested = OutputMode::Auto;
     OutputMode effective = OutputMode::Raw;
 
     bool HasNumber(const char* key) const
