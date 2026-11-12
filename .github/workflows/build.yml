@@ -47,15 +47,15 @@ jobs:
       with:
         submodules: recursive
 
-    - name: Setup GCC 15
-      uses: egor-tensin/setup-gcc@v2
-      with:
-        version: '15'
+    # The hosted Ubuntu image already provides a C++20-capable compiler.
+    # Avoid a PPA/download dependency that can fail with external HTTP 503.
+    - name: Verify system GCC
+      run: g++ --version
     
     - name: Build
       working-directory: ${{github.workspace}}/build
       env:
-        CXX: g++-15
+        CXX: g++
       run: |
         cmake .. -DCMAKE_BUILD_TYPE=$BUILD_TYPE -DBUILD_UTILS=ON -DBUILD_NAMCORE=ON -DBUILD_STATIC_RTNEURAL=ON -DBUILD_INTERNAL_STATIC_WAVENET=ON -DBUILD_INTERNAL_STATIC_LSTM=ON
         cmake --build . --config $BUILD_TYPE -j4
