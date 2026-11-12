@@ -38,6 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p variants
           for variant in base gemm full; do
             case "$variant" in
               base) sha=a1f9b67a40e97b118531b8cbe4e5bf32534fac4c; prepared=OFF ;;
