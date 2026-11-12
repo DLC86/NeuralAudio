@@ -134,6 +134,19 @@ host still owns automation timing and any desired extra de-click for other
 models/controls. The interpolation intervals are model-sample-clock based,
 not wall-clock based. Longer ramp times make controls respond more gradually.
 
+### Hypernetwork off the audio thread
+
+`SetControlValues()` evaluates the hypernetwork inside the next `Process()`. A host can
+move that evaluation to a control thread instead: `MakePreparedControls()` once,
+then for each change `PrepareControlValues(values, prepared)` on the control thread
+(validation, display mapping and the active network's hypernetwork) and
+`CommitPrepared(prepared)` between `Process()` calls (copies only, no allocation).
+The audio is identical to `SetControlValues()`. `PrepareControlValues` may overlap
+`Process()` but not another `PrepareControlValues` on the same model; a host hands
+the result over with its own lock-free scheme (e.g. a triple buffer). One prepared
+object may be committed to several models loaded from the same file, such as the two
+copies of a 2x oversampled network. Size changes stay offline: prepare again after one.
+
 ## Output modes and calibration
 
 `Process()` applies the selected output gain. It never normalizes individual knob

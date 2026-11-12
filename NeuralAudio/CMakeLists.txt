@@ -198,6 +198,15 @@ if(BUILD_NAMCORE AND BUILD_PNAM)
         message(FATAL_ERROR "PNAM A2 fast-kernel smoothing patch failed: ${PNAM_A2_ERROR}")
     endif()
     message(STATUS "${PNAM_A2_OUTPUT}")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/../patches/apply-precomputed-conditioning.py"
+                "${PNAM_CORE_PATH}"
+        RESULT_VARIABLE PNAM_PRE_RESULT
+        OUTPUT_VARIABLE PNAM_PRE_OUTPUT ERROR_VARIABLE PNAM_PRE_ERROR)
+    if(NOT PNAM_PRE_RESULT EQUAL 0)
+        message(FATAL_ERROR "PNAM precomputed-conditioning patch failed: ${PNAM_PRE_ERROR}")
+    endif()
+    message(STATUS "${PNAM_PRE_OUTPUT}")
 endif()
 
 if(BUILD_NAMCORE)

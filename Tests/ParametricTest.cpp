@@ -262,6 +262,49 @@ void TestSwitchOptionIndices(const std::filesystem::path& dir,
     Check(rejected,"Duplicate switch index_sw was accepted");
 }
 
+void TestPreparedControls(const std::filesystem::path& dir, NeuralAudio::NeuralModelLoader& loader) {
+    for (const char* file : {"hyper_a2_low_rank.nam", "switch_a2.nam", "switch_concat.nam"}) {
+        for (bool lite : {false, true}) {
+            const auto source = Read(dir / file);
+            auto direct = Load(source, loader);
+            auto prepared = Load(source, loader);
+            auto twin = Load(source, loader);
+            for (auto* p : {direct.get(), prepared.get(), twin.get()}) {
+                p->SetOutputMode(OutputMode::Raw);
+                p->SetQualityScaleFactor(lite ? 0.5f : 1.0f);
+                p->Prewarm();
+            }
+            const auto& specs = direct->GetControls();
+            auto staging = prepared->MakePreparedControls();
+            std::vector<float> values(direct->GetControlValues().begin(), direct->GetControlValues().end());
+            const size_t n = 48000, block = 64;
+            std::vector<float> input(n), a(n), b(n), c(n);
+            for (size_t i = 0; i < n; ++i)
+                input[i] = 0.2f * std::sin(static_cast<float>(i) * 0.031f);
+            for (size_t pos = 0, step = 0; pos < n; pos += block, ++step) {
+                if (step % 37 == 5) { // changes every ~50 ms: inside ramps and update windows
+                    const size_t k = (step / 37) % values.size();
+                    const auto& s = specs[k];
+                    values[k] = s.IsSwitch() ? static_cast<float>(s.positionValues[(step / 37) % s.positionValues.size()])
+                                             : (values[k] == s.maximum ? s.minimum : s.maximum);
+                    direct->SetControlValues(values);
+                    prepared->PrepareControlValues(values, staging);
+                    prepared->CommitPrepared(staging);
+                    twin->CommitPrepared(staging);
+                }
+                const size_t count = std::min(block, n - pos);
+                direct->Process(input.data() + pos, a.data() + pos, count);
+                prepared->Process(input.data() + pos, b.data() + pos, count);
+                twin->Process(input.data() + pos, c.data() + pos, count);
+            }
+            for (size_t i = 0; i < n; ++i)
+                Check(a[i] == b[i] && a[i] == c[i], "Prepared controls differ from SetControlValues");
+            Check(std::equal(values.begin(), values.end(), prepared->GetControlValues().begin()),
+                  "Prepared controls not reported by GetControlValues");
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     try {
         Check(argc == 2, "Usage: pnam_test <fixtures>");
@@ -272,6 +315,7 @@ int main(int argc, char** argv) {
         NeuralAudio::NeuralModelLoader loader;
         TestSwitchOptionIndices(dir, loader);
         TestLinearKernelWeightSmoothing(dir, loader);
+        TestPreparedControls(dir, loader);
         loader.SetDefaultMaxAudioBufferSize(257);
         TestOutputVolume(Read(dir/"hyper_a2_low_rank.nam"),loader);
         {

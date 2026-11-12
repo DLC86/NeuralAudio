@@ -68,6 +68,9 @@ struct ParametricModel::Impl
     std::vector<nam::IParametricControl*> controls;
     std::vector<nam::kernel_weight_smoothing::WeightSmoothingControl*> smoothers;
     std::vector<bool> controlPending, smoothingConfigPending;
+    // CommitPrepared: the hypernetwork output for neuralValues, per branch, until Process installs it.
+    std::vector<std::vector<float>> preparedWeights;
+    std::vector<bool> preparedValid;
     std::vector<int> updateCooldown;
     float weightUpdateIntervalMs = 100.0f;
     float weightSmoothingMs = 100.0f;
@@ -178,6 +181,11 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     next->controlPending.resize(next->models.size(), false);
     next->smoothingConfigPending.resize(next->models.size(), true);
     next->updateCooldown.resize(next->models.size(), 0);
+    next->preparedWeights.resize(next->models.size());
+    next->preparedValid.resize(next->models.size(), false);
+    for (size_t i = 0; i < next->models.size(); ++i)
+        if (auto* p = dynamic_cast<nam::IPrecomputedConditioning*>(next->models[i].get()))
+            next->preparedWeights[i].resize(p->ConditionedSize());
     for (size_t i = 0; i < next->models.size(); ++i) {
         next->smoothers[i] =
             dynamic_cast<nam::kernel_weight_smoothing::WeightSmoothingControl*>(next->models[i].get());
@@ -273,6 +281,7 @@ std::span<const float> ParametricModel::GetControlValues() const
 }
 void ParametricModel::SetControlValues(std::span<const float> values)
 {
+    std::fill(impl->preparedValid.begin(), impl->preparedValid.end(), false);
     // Validate once, before committing either variant. Both branches share identical specs.
     if (values.size() != impl->specs.size()) throw std::invalid_argument("PNAM control count");
     for (size_t i = 0; i < values.size(); ++i)
@@ -320,6 +329,80 @@ void ParametricModel::SetControlValues(std::span<const float> values)
     if (!impl->displayToNative.empty())
         impl->displayValues.assign(values.begin(), values.end());
 }
+PreparedControls ParametricModel::MakePreparedControls() const
+{
+    PreparedControls p;
+    p.display.resize(impl->specs.size());
+    p.native.resize(impl->specs.size());
+    p.neural.resize(impl->neuralValues.size());
+    size_t most = 0;
+    for (const auto& w : impl->preparedWeights) most = std::max(most, w.size());
+    p.weights.reserve(most);
+    return p;
+}
+
+void ParametricModel::PrepareControlValues(std::span<const float> values, PreparedControls& out) const
+{
+    // The same checks and mapping as SetControlValues, into `out`.
+    if (values.size() != impl->specs.size()) throw std::invalid_argument("PNAM control count");
+    for (size_t i = 0; i < values.size(); ++i)
+    {
+        const auto& s = impl->specs[i];
+        const float v = values[i];
+        if (!std::isfinite(v) || v < s.minimum || v > s.maximum ||
+            (s.IsSwitch() && (v != std::floor(v) || v < 0 || v >= s.positions.size())))
+            throw std::invalid_argument("PNAM control value outside its range");
+    }
+    out.display.assign(values.begin(), values.end());
+    out.native.resize(values.size());
+    if (!impl->displayToNative.empty())
+        for (size_t display = 0; display < values.size(); ++display)
+            out.native[impl->displayToNative[display]] = values[display];
+    else
+        std::copy(values.begin(), values.end(), out.native.begin());
+    out.neural.clear();
+    for (size_t i = 0; i < out.native.size(); ++i)
+        if (!impl->volume.enabled || i != impl->volume.index)
+            out.neural.push_back(out.native[i]);
+    out.volumeTarget = impl->volume.enabled ? impl->volume.Evaluate(out.native[impl->volume.index]) : 1.0;
+    out.branch = impl->active;
+    auto* pre = dynamic_cast<const nam::IPrecomputedConditioning*>(impl->models.at(impl->active).get());
+    out.conditioned = pre != nullptr;
+    if (pre)
+        pre->ComputeConditioned(out.neural, out.weights);
+}
+
+void ParametricModel::CommitPrepared(const PreparedControls& p)
+{
+    // SetControlValues' effect, with the hypernetwork output carried along: no allocation
+    // (same sizes), no hypernetwork on this thread.
+    if (p.native.size() != impl->values.size() || p.neural.size() != impl->neuralValues.size())
+        throw std::invalid_argument("PNAM prepared controls of another model");
+    const bool changed = !std::equal(p.neural.begin(), p.neural.end(), impl->neuralValues.begin());
+    if (changed)
+    {
+        std::copy(p.neural.begin(), p.neural.end(), impl->neuralValues.begin());
+        for (size_t i = 0; i < impl->controls.size(); ++i)
+        {
+            const bool ours = p.conditioned && i == p.branch && impl->preparedWeights[i].size() == p.weights.size() &&
+                              !p.weights.empty();
+            if (ours)
+                std::copy(p.weights.begin(), p.weights.end(), impl->preparedWeights[i].begin());
+            impl->preparedValid[i] = ours;
+            if (impl->smoothers[i]) impl->controlPending[i] = true;
+            else if (ours)
+                dynamic_cast<nam::IPrecomputedConditioning*>(impl->models[i].get())
+                    ->SetParamsConditioned(impl->neuralValues, impl->preparedWeights[i]);
+            else impl->controls[i]->SetParams(impl->neuralValues);
+        }
+    }
+    std::copy(p.native.begin(), p.native.end(), impl->values.begin());
+    if (impl->volume.enabled)
+        impl->volumeTarget = p.volumeTarget;
+    if (!impl->displayToNative.empty())
+        std::copy(p.display.begin(), p.display.end(), impl->displayValues.begin());
+}
+
 void ParametricModel::SetWeightUpdateIntervalMs(const float ms)
 {
     if (!std::isfinite(ms) || ms < 0 || ms > 10000)
@@ -397,7 +480,12 @@ void ParametricModel::Process(const float* input, float* output, size_t samples)
         const size_t branch = impl->active;
         if (impl->smoothers[branch] && impl->controlPending[branch] &&
             impl->updateCooldown[branch] == 0) {
-            impl->controls[branch]->SetParams(impl->neuralValues);
+            auto* pre = dynamic_cast<nam::IPrecomputedConditioning*>(impl->models[branch].get());
+            if (pre && impl->preparedValid[branch])
+                pre->SetParamsConditioned(impl->neuralValues, impl->preparedWeights[branch]);
+            else
+                impl->controls[branch]->SetParams(impl->neuralValues);
+            impl->preparedValid[branch] = false;
             impl->controlPending[branch] = false;
             impl->updateCooldown[branch] =
                 impl->SamplesForMs(branch, impl->weightUpdateIntervalMs);

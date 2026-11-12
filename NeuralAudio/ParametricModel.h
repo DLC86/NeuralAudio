@@ -15,6 +15,18 @@ struct ControlSpec
     bool IsSwitch() const { return !positions.empty(); }
 };
 
+// Control values prepared off the audio thread (ParametricModel::PrepareControlValues): the
+// network values, the Linear Volume target and, for the active network when it has a
+// hypernetwork, its output. Sized once by MakePreparedControls; reusable.
+struct PreparedControls
+{
+    std::vector<float> display, native, neural;
+    double volumeTarget = 1;
+    size_t branch = 0;
+    bool conditioned = false; // `weights` holds the hypernetwork output for `neural`
+    std::vector<float> weights;
+};
+
 // Mono PNAM runtime, independent of JUCE. Load/prepare/quality changes are
 // non-realtime operations. Serialize control updates with Process on the audio thread.
 class ParametricModel final : public NeuralModelImpl
@@ -26,6 +38,14 @@ public:
     const std::vector<ControlSpec>& GetControls() const;
     std::span<const float> GetControlValues() const;
     void SetControlValues(std::span<const float> values);
+    // SetControlValues in two halves. PrepareControlValues validates and runs the hypernetwork
+    // of the active network on the calling thread (a control thread; it may overlap Process,
+    // not another PrepareControlValues on this model). CommitPrepared hands the result over
+    // between Process() calls like SetControlValues, without allocating or running the
+    // hypernetwork; a model with the same file (2x oversampling's second copy) may take it too.
+    PreparedControls MakePreparedControls() const;
+    void PrepareControlValues(std::span<const float> values, PreparedControls& out) const;
+    void CommitPrepared(const PreparedControls& prepared);
     // Independent, model-sample-time cadence and ramp (milliseconds). Both
     // default to 100 ms. HyperWaveNet uses linear per-sample coefficient ramps.
     // Call these setters between Process() calls, not concurrently with audio.
