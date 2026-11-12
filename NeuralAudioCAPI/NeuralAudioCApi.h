@@ -67,6 +67,8 @@ NA_EXTERN const char* PnamGetControlName(NeuralModel* model, size_t index);
 NA_EXTERN int PnamGetControlRange(NeuralModel* model, size_t index, float* minimum, float* maximum, float* nominal);
 NA_EXTERN size_t PnamGetPositionCount(NeuralModel* model, size_t index);
 NA_EXTERN const char* PnamGetPositionName(NeuralModel* model, size_t index, size_t position);
+// A displayed option index_sw maps to the original 0..N-1 neural switch value.
+NA_EXTERN int PnamGetPositionValue(NeuralModel* model, size_t index, size_t position);
 NA_EXTERN int PnamSetControls(NeuralModel* model, const float* values, size_t count);
 // Developer-configurable, independent milliseconds; default 100/100, linear.
 NA_EXTERN int PnamSetWeightUpdateIntervalMs(NeuralModel* model, float ms);

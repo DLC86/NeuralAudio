@@ -10,7 +10,8 @@ struct ControlSpec
 {
     std::string name;
     float minimum, maximum, defaultValue;
-    std::vector<std::string> positions;
+    std::vector<std::string> positions; // display order (index_sw)
+    std::vector<int> positionValues; // associated original neural 0..N-1 value
     bool IsSwitch() const { return !positions.empty(); }
 };
 

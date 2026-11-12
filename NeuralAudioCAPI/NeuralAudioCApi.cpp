@@ -193,6 +193,16 @@ const char* PnamGetPositionName(NeuralModel* model, size_t index, size_t positio
 #endif
     return nullptr;
 }
+int PnamGetPositionValue(NeuralModel* model, size_t index, size_t position) {
+#ifdef BUILD_PNAM
+    if (auto* p = Pnam(model); p && index < p->GetControls().size()) {
+        const auto& spec=p->GetControls()[index];
+        if (position<spec.positionValues.size())
+            return spec.positionValues[position];
+    }
+#endif
+    return -1;
+}
 int PnamSetControls(NeuralModel* model, const float* values, size_t count) {
 #ifdef BUILD_PNAM
     return WithPnam(model, [&](auto& p) {

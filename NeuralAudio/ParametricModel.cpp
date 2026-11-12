@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <numeric>
 #include <cctype>
 #include <cmath>
 #include <stdexcept>
@@ -14,6 +15,53 @@
 
 namespace NeuralAudio
 {
+namespace {
+// Convert the new display-oriented "options" metadata to the pinned NAM core's
+// legacy enum_names. This changes metadata only: one-hot neural value order and
+// serialized weight tensors are NEVER reordered.
+void NormalizeSwitchOptions(nlohmann::json& config)
+{
+    if (!config.is_object()) return;
+    if (config.contains("params") && config["params"].is_array()) {
+        for (auto& param : config["params"]) {
+            if (!param.is_object() || !param.contains("options")) continue;
+            if (param.value("type", "") != "switch")
+                throw std::runtime_error("Only switches may specify options");
+            const auto& options=param.at("options");
+            if (!options.is_array() || options.size()<2)
+                throw std::runtime_error("Switch options must contain at least two entries");
+            std::vector<std::string> names(options.size());
+            std::vector<bool> values(options.size(),false),positions(options.size(),false);
+            for (const auto& option:options) {
+                if (!option.is_object() || !option.contains("name") ||
+                    !option["name"].is_string() || !option.contains("value") ||
+                    !option["value"].is_number_integer() || !option.contains("index_sw") ||
+                    !option["index_sw"].is_number_integer())
+                    throw std::runtime_error("Switch option needs name, value and index_sw");
+                const int v=option["value"].get<int>(), idx=option["index_sw"].get<int>();
+                if (v<0 || idx<0 || static_cast<size_t>(v)>=options.size() ||
+                    static_cast<size_t>(idx)>=options.size() ||
+                    values[static_cast<size_t>(v)] || positions[static_cast<size_t>(idx)])
+                    throw std::runtime_error("Switch value/index_sw must be unique 0..N-1 permutations");
+                names[static_cast<size_t>(v)]=option["name"].get<std::string>();
+                values[static_cast<size_t>(v)]=positions[static_cast<size_t>(idx)]=true;
+            }
+            if (param.contains("enum_names") && !param["enum_names"].is_null() &&
+                param.at("enum_names") != names)
+                throw std::runtime_error("Switch options disagree with enum_names");
+            param["enum_names"]=names;
+            param.erase("options");
+        }
+    }
+    if (config.contains("submodels") && config["submodels"].is_array())
+        for (auto& branch:config["submodels"])
+            if (branch.is_object() && branch.contains("config"))
+                NormalizeSwitchOptions(branch["config"]);
+    if (config.contains("base_config"))
+        NormalizeSwitchOptions(config["base_config"]);
+}
+} // namespace
+
 struct ParametricModel::Impl
 {
     std::vector<std::unique_ptr<nam::DSP>> models;
@@ -98,7 +146,9 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     next->weightUpdateIntervalMs = impl->weightUpdateIntervalMs;
     next->weightSmoothingMs = impl->weightSmoothingMs;
     const auto* gainConfig = pnam::OutputGainCurve::FindConfig(source);
-    const auto base=pnam::OutputGainCurve::NeuralSource(source);
+    const auto originalBase=pnam::OutputGainCurve::NeuralSource(source);
+    auto base=originalBase;
+    NormalizeSwitchOptions(base["config"]);
     const auto architecture = base.at("architecture").get<std::string>();
     const bool a2 = architecture == "HyperA2" ||
                     architecture == "ParametricSlimmableContainer";
@@ -133,8 +183,23 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
             dynamic_cast<nam::kernel_weight_smoothing::WeightSmoothingControl*>(next->models[i].get());
         next->ConfigureSmoothing(i);
     }
+    const auto& rawSpecs = originalBase.at("config").at("params");
     for (const auto& spec : next->controls.front()->GetParamSpecs())
         next->specs.push_back({spec.name, spec.min, spec.max, spec.defaultValue, spec.enum_names});
+    for (size_t i=0;i<next->specs.size();++i) {
+        auto& spec=next->specs[i];
+        if (!spec.IsSwitch()) continue;
+        spec.positionValues.resize(spec.positions.size());
+        std::iota(spec.positionValues.begin(), spec.positionValues.end(), 0);
+        if (!rawSpecs.at(i).contains("options")) continue;
+        const auto names=spec.positions; // names still in original neural order
+        for (const auto& entry:rawSpecs.at(i).at("options")) {
+            const int value=entry.at("value").get<int>();
+            const int display=entry.at("index_sw").get<int>();
+            spec.positions.at(static_cast<size_t>(display))=names.at(static_cast<size_t>(value));
+            spec.positionValues.at(static_cast<size_t>(display))=value;
+        }
+    }
     const auto initial = next->controls.front()->GetParams();
     next->neuralValues.assign(initial.begin(), initial.end());
     next->values = next->neuralValues;
@@ -151,7 +216,7 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     }
     // New files can assign a single presentation index across neural controls
     // and Linear Volume. Older files without neural indices remain unchanged.
-    const auto& stored = base.at("config").at("params");
+    const auto& stored = originalBase.at("config").at("params");
     const bool indexed = std::any_of(stored.begin(), stored.end(),
         [](const nlohmann::json& entry) { return entry.contains("index"); });
     if (indexed) {

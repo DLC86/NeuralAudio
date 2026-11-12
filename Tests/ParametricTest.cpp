@@ -225,6 +225,43 @@ void TestAutoOutputModeAllModels() {
           "Keras out_gain Auto compatibility");
 }
 
+void TestSwitchOptionIndices(const std::filesystem::path& dir,
+                             NeuralAudio::NeuralModelLoader& loader) {
+    auto old=Read(dir/"switch_hyper.nam");
+    auto modern=old;
+    auto& sw=modern["config"]["params"][0];
+    sw["options"]=nlohmann::json::array({
+        {{"name","Clean"},{"value",0},{"index_sw",2}},
+        {{"name","Crunch"},{"value",1},{"index_sw",0}},
+        {{"name","Lead"},{"value",2},{"index_sw",1}},
+    });
+    sw.erase("enum_names");
+    auto original=Load(old, loader), converted=Load(modern, loader);
+    const auto& control=converted->GetControls()[0];
+    Check(control.positions==std::vector<std::string>({"Crunch","Lead","Clean"}),
+          "Switch display positions must follow index_sw");
+    Check(control.positionValues==std::vector<int>({1,2,0}),
+          "Switch display-to-neural mapping must preserve original values");
+    converted->SetOutputMode(OutputMode::Raw);
+    original->SetOutputMode(OutputMode::Raw);
+    auto values=std::vector<float>(original->GetControlValues().begin(),
+                                  original->GetControlValues().end());
+    values[0]=1;
+    original->SetControlValues(values);
+    converted->SetControlValues(values);
+    original->Prewarm(); converted->Prewarm();
+    std::vector<float> input(8192,0.1f), a(8192), b(8192);
+    original->Process(input.data(),a.data(),a.size());
+    converted->Process(input.data(),b.data(),b.size());
+    for (size_t i=0;i<a.size();++i)
+        Check(std::abs(a[i]-b[i])<2e-5f,"Switch metadata changed neural audio");
+    auto invalid=modern;
+    invalid["config"]["params"][0]["options"][0]["index_sw"]=0;
+    bool rejected=false;
+    try { auto model=Load(invalid,loader); } catch (...) {rejected=true;}
+    Check(rejected,"Duplicate switch index_sw was accepted");
+}
+
 int main(int argc, char** argv) {
     try {
         Check(argc == 2, "Usage: pnam_test <fixtures>");
@@ -233,6 +270,7 @@ int main(int argc, char** argv) {
         const auto input = manifest.at("input").get<std::vector<float>>();
         TestAutoOutputModeAllModels();
         NeuralAudio::NeuralModelLoader loader;
+        TestSwitchOptionIndices(dir, loader);
         TestLinearKernelWeightSmoothing(dir, loader);
         loader.SetDefaultMaxAudioBufferSize(257);
         TestOutputVolume(Read(dir/"hyper_a2_low_rank.nam"),loader);
