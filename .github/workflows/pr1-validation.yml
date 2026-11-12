@@ -1,0 +1,120 @@
+name: PR1 isolated audio and CPU A-B-C validation
+
+on:
+  push:
+    branches: [experiment/pr1-cpu-audio-validation]
+    paths:
+      - '.github/workflows/pr1-validation.yml'
+      - 'Tests/PR1Benchmark.cpp'
+      - 'Tests/PR1Analyze.py'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pnam-pr1-validation
+  cancel-in-progress: true
+
+jobs:
+  compare:
+    name: Same-runner x86-64 benchmark and audio residual tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: true
+      - name: Pin compiler and route Eigen clones through available GitHub mirror
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global url."https://github.com/eigenteam/eigen-git-mirror.git".insteadOf "https://gitlab.com/libeigen/eigen"
+          g++ --version | head -n 1
+          cmake --version | head -n 1
+          ninja --version
+          nproc
+      - name: Checkout and compile all three exact source revisions
+        shell: bash
+        run: |
+          set -euo pipefail
+          for variant in base gemm full; do
+            case "$variant" in
+              base) sha=a1f9b67a40e97b118531b8cbe4e5bf32534fac4c; prepared=OFF ;;
+              gemm) sha=7f5ffd0e01df6db137dac393dec98365157adc7a; prepared=OFF ;;
+              full) sha=41807a009eb086d663aa10689ac66a8cdf1350e3; prepared=ON ;;
+            esac
+            echo "::group::Compile $variant $sha"
+            git clone -q --no-checkout https://github.com/DLC86/NeuralAudio.git "variants/$variant"
+            if [ "$variant" != base ]; then
+              git -C "variants/$variant" fetch -q origin refs/pull/1/head
+            fi
+            git -C "variants/$variant" checkout -q "$sha"
+            git -C "variants/$variant" submodule update --init --recursive --jobs 4
+            cp Tests/PR1Benchmark.cpp "variants/$variant/Tests/PR1Benchmark.cpp"
+            cat >> "variants/$variant/CMakeLists.txt" <<'EOCMAKE'
+
+          if(BUILD_PNAM_TESTS AND BUILD_PNAM)
+            add_executable(pnam_pr_benchmark Tests/PR1Benchmark.cpp)
+            target_link_libraries(pnam_pr_benchmark PRIVATE NeuralAudio)
+            if(PR1_HAS_PREPARED)
+              target_compile_definitions(pnam_pr_benchmark PRIVATE PR1_HAS_PREPARED=1)
+            endif()
+          endif()
+          EOCMAKE
+            cmake -S "variants/$variant" -B "variants/$variant/build/pr1" -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_RTNEURAL=OFF -DBUILD_INTERNAL_STATIC_WAVENET=OFF -DBUILD_STATIC_INTERNAL_NAMA2=OFF -DBUILD_PNAM_TESTS=ON -DBUILD_UTILS=OFF -DPR1_HAS_PREPARED="$prepared"
+            cmake --build "variants/$variant/build/pr1" --parallel 2 --target pnam_test pnam_pr_benchmark
+            ctest --test-dir "variants/$variant/build/pr1" --output-on-failure -R '^pnam$'
+            echo "::endgroup::"
+          done
+
+      - name: Render deterministic idle / slow / fast / step knob-automation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          for fixture in hyper_a2_low_rank switch_a2; do
+            for quality in full lite; do
+              case "$quality" in full) q=1.0;; lite) q=0.5;; esac
+              for block in 32 128; do
+                for scenario in idle slow fast step; do
+                  for variant in base gemm full; do
+                    prefix="out/${variant}__${fixture}__${scenario}__b${block}__q${quality}__direct"
+                    "variants/$variant/build/pr1/pnam_pr_benchmark" \
+                      "variants/$variant/Tests/fixtures/$fixture.nam" \
+                      "$scenario" "$block" "$q" direct 96000 "$prefix" > /dev/null
+                  done
+                  prefix="out/full__${fixture}__${scenario}__b${block}__q${quality}__prepared"
+                  "variants/full/build/pr1/pnam_pr_benchmark" \
+                    "variants/full/Tests/fixtures/$fixture.nam" \
+                    "$scenario" "$block" "$q" prepared 96000 "$prefix" > /dev/null
+                  echo "rendered $fixture $quality block=$block scenario=$scenario"
+                done
+              done
+            done
+          done
+
+      - name: Check null residuals, event-boundary discontinuities, and compare CPU peaks
+        run: python3 Tests/PR1Analyze.py out
+
+      - name: Record reproducible report in validation branch
+        if: success()
+        shell: bash
+        run: |
+          mkdir -p Tests/pr1_results
+          cp out/report.md Tests/pr1_results/report.md
+          cp out/report.json Tests/pr1_results/report.json
+          cp out/measurements.csv Tests/pr1_results/measurements.csv
+          git config user.name "PR1 Benchmark Bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Tests/pr1_results/
+          git diff --cached --quiet || git commit -m "Record independently measured PR1 DSP performance and audio null tests"
+          git push origin HEAD:experiment/pr1-cpu-audio-validation
+
+      - name: Upload raw audio results and full analysis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr1-audio-cpu-validation
+          path: out/
+          retention-days: 14
