@@ -1,0 +1,30 @@
+name: Remove merged smoothing experiment branch
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/cleanup-smoothing-branch.yml'
+permissions:
+  contents: write
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Remove feature branch only after its history is on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          branch='feature/direct-kernel-smoothing-100ms'
+          if ! gh api "repos/$GH_REPO/git/ref/heads/$branch" > /tmp/feature.json 2>/dev/null; then
+            echo "Already removed $branch"
+            exit 0
+          fi
+          sha=$(python3 -c 'import json;print(json.load(open("/tmp/feature.json"))["object"]["sha"])')
+          git merge-base --is-ancestor "$sha" "$GITHUB_SHA"
+          gh api -X DELETE "repos/$GH_REPO/git/refs/heads/$branch"
+          echo "Deleted merged branch $branch"
