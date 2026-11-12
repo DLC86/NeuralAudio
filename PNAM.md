@@ -134,6 +134,25 @@ host still owns automation timing and any desired extra de-click for other
 models/controls. The interpolation intervals are model-sample-clock based,
 not wall-clock based. Longer ramp times make controls respond more gradually.
 
+### GEMM-optimized A2 convolution ramps
+
+When A2/HyperWaveNet controls move, the **single audio network** still
+interpolates convolution weights **linearly for every audio sample** over
+the configured ramp (default **100 ms**). The A2 fast path now evaluates
+the algebraically equivalent form `W*x + alpha(sample)*(deltaW*x)` with
+preallocated **Eigen block GEMMs**. Kernels whose weight deltas are all
+zero skip the extra multiplication entirely. The stationary DSP path is
+unchanged; these changes do **not** move the hypernetwork to another
+thread or introduce multiple DSP networks.
+
+The independent A/B/C benchmark of this exact optimization is archived
+under `Tests/pr1_results/` in
+[`experiment/pr1-cpu-audio-validation`](https://github.com/DLC86/NeuralAudio/tree/experiment/pr1-cpu-audio-validation).
+It found equivalent audio within floating-point residuals (worst
+relative residual -114.1 dB on synthetic fixtures) and substantially
+lower callback time during continuous control movement on Linux x86-64.
+Real capture listening remains advisable for each host/hardware platform.
+
 ## Output modes and calibration
 
 `Process()` applies the selected output gain. It never normalizes individual knob
