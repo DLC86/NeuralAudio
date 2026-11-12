@@ -44,6 +44,24 @@ files must supply a complete, unique `0..N-1` display permutation
 rather than silently changing the sound. The `index` field is UI/API
 metadata, not the hypernetwork input position.
 
+### Indexed switch options
+
+New switch entries may replace the legacy `enum_names` list with
+`options: [{"name":"Clean","value":0,"index_sw":2}, ...]`.
+The `value` is the original zero-based *neural* switch value, and
+`index_sw` is the zero-based visual position. Both fields must independently
+form complete, unique permutations `0..N-1` for that switch. The `default`
+field remains the original neural value. A switch may define `index` for its
+own control order and `index_sw` for each option's order.
+
+The C++ `ControlSpec.positions` and C
+`PnamGetPositionName` return labels in `index_sw` display order, while
+`ControlSpec.positionValues` and `PnamGetPositionValue` give each
+displayed option's **original neural value**. Call `SetControlValues` /
+`PnamSetControls` with that value, **not** the displayed index. Old files
+with `enum_names` are still accepted and get natural `0..N-1` order.
+Neural conditioning and exported weights are never reordered.
+
 ## Build
 
 Requires a C++20 compiler and CMake 3.20 or later. No JUCE, CUDA, or training

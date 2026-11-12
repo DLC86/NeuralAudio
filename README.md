@@ -37,6 +37,9 @@ For implementation details, see the [PNAM integration guide](PNAM.md) and
 
 - Enumerates continuous knobs and any number of categorical switches, with
   name, limits, default value, number of positions and position labels.
+  Switches accept legacy `enum_names` and new `options` objects with
+  `name`, original neural `value` and visual `index_sw`; reordered labels
+  never change the switch's one-hot neural state.
 - Allows validated parameter changes **without recreating the neural network**;
   the parametric NAM Core updates conditioned weights and retains the running
   convolution history. Rejects invalid counts, out-of-range knob values and
@@ -94,7 +97,7 @@ The existing `NeuralAudioCAPI` gains:
 parametric timing control, alongside
 `CreateModelFromFileUtf8`, `IsParametric`, `PnamGetControlCount`,
 `PnamGetControlName`, `PnamGetControlRange`, `PnamGetPositionCount`,
-`PnamGetPositionName`, `PnamSetControls`, `PnamSetOutputMode`,
+`PnamGetPositionName`, `PnamGetPositionValue`, `PnamSetControls`, `PnamSetOutputMode`,
 `PnamGetOutputMode`, `PnamGetEffectiveOutputMode`,
 `PnamSetCalibrationLevelDBu`, `PnamHasLite`, `PnamSetLite` and
 `PnamGetMetadataJson`.
