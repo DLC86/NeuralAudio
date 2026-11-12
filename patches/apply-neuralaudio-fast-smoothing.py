@@ -79,7 +79,10 @@ replace("wavenet/a2_fast.cpp",
 replace("wavenet/a2_fast.cpp",
         "    std::array<float, Channels * Channels> l1x1_w{};\n    std::array<float, Channels> l1x1_b{};",
         """    std::array<float, Channels * Channels> l1x1_w{}, l1x1_delta{};
-    std::array<float, Channels> l1x1_b{}, l1x1_b_delta{};""")
+    std::array<float, Channels> l1x1_b{}, l1x1_b_delta{};
+    // Set by _load_delta: whether the ramp changes the dilated conv / the 1x1 weights at all.
+    // When it does not, the ramp runs them with the stationary GEMMs only.
+    bool conv_ramps = false, l1x1_ramps = false;""")
 replace("wavenet/a2_fast.cpp",
         "  std::array<float, Channels> _rechannel_w{};",
         "  std::array<float, Channels> _rechannel_w{}, _rechannel_delta{};")
@@ -93,6 +96,16 @@ replace("wavenet/a2_fast.cpp",
 replace("wavenet/a2_fast.cpp",
         "  float _head_scale = 1.0f;",
         "  float _head_scale = 1.0f, _head_scale_delta = 0.0f;")
+replace("wavenet/a2_fast.cpp",
+        "  std::vector<float> _z; // per-layer conv output accumulator (tap-major)\n",
+        """  std::vector<float> _z; // per-layer conv output accumulator (tap-major)
+  std::vector<float> _zd; // ramp only: delta-weight products (W_target - W_start) * x, same shape as _z
+""")
+replace("wavenet/a2_fast.cpp",
+        "  _z.assign(static_cast<size_t>(Channels) * maxBufferSize, 0.0f);\n",
+        """  _z.assign(static_cast<size_t>(Channels) * maxBufferSize, 0.0f);
+  _zd.assign(static_cast<size_t>(Channels) * maxBufferSize, 0.0f);
+""")
 replace("wavenet/a2_fast.cpp",
         "  size_t _weight_count = 0;",
         """  size_t _weight_count = 0;
@@ -143,6 +156,8 @@ void A2FastModel<Channels>::_load_delta(std::span<const float> target)
         L.l1x1_delta[index] = take() - L.l1x1_w[index];
       }
     for (int i = 0; i < Channels; ++i) L.l1x1_b_delta[i] = take() - L.l1x1_b[i];
+    L.conv_ramps = std::any_of(L.conv_delta.begin(), L.conv_delta.end(), [](float d) { return d != 0.0f; });
+    L.l1x1_ramps = std::any_of(L.l1x1_delta.begin(), L.l1x1_delta.end(), [](float d) { return d != 0.0f; });
   }
   for (int j = 0; j < Channels; ++j)
     for (int k = 0; k < kHeadKernelSize; ++k)
@@ -156,13 +171,20 @@ void A2FastModel<Channels>::_load_delta(std::span<const float> target)
 // -----------------------------------------------------------------------------""")
 
 # This is a separate fast A2 DSP branch while a weight ramp is active. It
-# computes exactly one convolutional network; each coefficient is w+a*dw.
-# Idle processing keeps the original optimized tiled/Eigen path unchanged.
+# computes exactly one convolutional network, as if each coefficient were w+a*dw:
+# W(a) x = W x + a (dW x), with the products as block GEMMs like the stationary
+# path and only the per-frame alpha scaling scalar; all-zero deltas (a
+# hypernetwork that leaves the dilated conv alone) are skipped. Idle processing
+# keeps the original optimized tiled/Eigen path unchanged.
 replace("wavenet/a2_fast.cpp",
         """// Runtime dispatcher: selects the K-specialized kernel for this layer.""",
         """template <int Channels>
 void A2FastModel<Channels>::_layer_forward_smooth(Layer& L, const float* cond, int frames)
 {
+  // Interpolating each weight per sample, (W + a dW) x, equals W x + a (dW x): the products are
+  // block GEMMs as in the stationary path (Eigen, no allocation for these fixed-row maps), and
+  // only the per-frame alpha scaling is scalar. Deltas that are all zero (a hypernetwork that
+  // leaves the dilated conv alone) cost nothing.
   _ring_write(L, frames);
   const int K = L.kernel_size;
   const int D = L.dilation;
@@ -173,34 +195,56 @@ void A2FastModel<Channels>::_layer_forward_smooth(Layer& L, const float* cond, i
   const int base = L.write_pos - frames;
   auto tap_base = [&](int back) { return base - back * D; };
 #endif
-  for (int f = 0; f < frames; ++f) {
-    const float a = _block_alphas[f];
-    float* z = _z.data() + static_cast<size_t>(f) * Channels;
-    float* sum = _head_sum.data() + static_cast<size_t>(f) * Channels;
-    float* lin = _layer_in.data() + static_cast<size_t>(f) * Channels;
+  using MatCC = Eigen::Matrix<float, Channels, Channels>;
+  using MatCDyn = Eigen::Matrix<float, Channels, Eigen::Dynamic>;
+  Eigen::Map<MatCDyn> z(_z.data(), Channels, frames);
+  Eigen::Map<MatCDyn> zd(_zd.data(), Channels, frames);
+  Eigen::Map<MatCDyn> lin(_layer_in.data(), Channels, frames);
+  const float* alpha = _block_alphas;
+
+  z.setZero();
+  for (int k = 0; k < K; ++k)
+  {
+    Eigen::Map<const MatCDyn> x(&L.history[static_cast<size_t>(tap_base(K - 1 - k)) * Channels], Channels, frames);
+    z.noalias() += Eigen::Map<const MatCC>(&L.conv_w[static_cast<size_t>(k) * Channels * Channels]) * x;
+  }
+  if (L.conv_ramps)
+  {
+    zd.setZero();
+    for (int k = 0; k < K; ++k)
+    {
+      Eigen::Map<const MatCDyn> x(&L.history[static_cast<size_t>(tap_base(K - 1 - k)) * Channels], Channels, frames);
+      zd.noalias() += Eigen::Map<const MatCC>(&L.conv_delta[static_cast<size_t>(k) * Channels * Channels]) * x;
+    }
+    for (int f = 0; f < frames; ++f)
+      z.col(f) += alpha[f] * zd.col(f);
+  }
+  float* hsum = _head_sum.data();
+  for (int f = 0; f < frames; ++f)
+  {
+    const float a = alpha[f];
+    float* zf = _z.data() + static_cast<size_t>(f) * Channels;
+    float* sf = hsum + static_cast<size_t>(f) * Channels;
     for (int o = 0; o < Channels; ++o)
-      z[o] = L.conv_b[o] + a * L.conv_b_delta[o] +
-             (L.mixin_w[o] + a * L.mixin_delta[o]) * cond[f];
-    for (int k = 0; k < K; ++k) {
-      const float* w = L.conv_w.data() + static_cast<size_t>(k) * Channels * Channels;
-      const float* dw = L.conv_delta.data() + static_cast<size_t>(k) * Channels * Channels;
-      const float* h = L.history.data() + static_cast<size_t>(tap_base(K - 1 - k) + f) * Channels;
-      for (int c = 0; c < Channels; ++c)
-        for (int o = 0; o < Channels; ++o) {
-          const int idx = c * Channels + o;
-          z[o] += (w[idx] + a * dw[idx]) * h[c];
-        }
+    {
+      const float v = zf[o] + L.conv_b[o] + a * L.conv_b_delta[o] + (L.mixin_w[o] + a * L.mixin_delta[o]) * cond[f];
+      zf[o] = v < 0 ? v * kLeakySlope : v;
+      sf[o] += zf[o];
     }
-    for (int o = 0; o < Channels; ++o) {
-      z[o] = z[o] < 0 ? z[o] * kLeakySlope : z[o];
-      sum[o] += z[o];
-      lin[o] += L.l1x1_b[o] + a * L.l1x1_b_delta[o];
-    }
-    for (int c = 0; c < Channels; ++c)
-      for (int o = 0; o < Channels; ++o) {
-        const int idx = c * Channels + o;
-        lin[o] += (L.l1x1_w[idx] + a * L.l1x1_delta[idx]) * z[c];
-      }
+  }
+  lin.noalias() += Eigen::Map<const MatCC>(L.l1x1_w.data()) * z;
+  if (L.l1x1_ramps)
+  {
+    zd.noalias() = Eigen::Map<const MatCC>(L.l1x1_delta.data()) * z;
+    for (int f = 0; f < frames; ++f)
+      lin.col(f) += alpha[f] * zd.col(f);
+  }
+  for (int f = 0; f < frames; ++f)
+  {
+    const float a = alpha[f];
+    float* lf = _layer_in.data() + static_cast<size_t>(f) * Channels;
+    for (int o = 0; o < Channels; ++o)
+      lf[o] += L.l1x1_b[o] + a * L.l1x1_b_delta[o];
   }
 }
 
