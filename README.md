@@ -146,6 +146,17 @@ see the separate [NAM Parametric Plugin](https://github.com/DLC86/NamParametricP
 For detailed host integration, control/threading contracts, output modes,
 performance scope and C API usage, consult [PNAM.md](PNAM.md).
 
+## Contributors and acknowledgements
+
+- **[@IllusionFpv](https://github.com/IllusionFpv)** — A2/HyperWaveNet GEMM-based
+  weight-ramp smoothing optimization and Raspberry Pi 5 benchmarks
+  ([PR #1](https://github.com/DLC86/NeuralAudio/pull/1)).
+  The separate off-audio-thread conditioning proposal in that PR is not
+  part of the current fork.
+
+For upstream contributors, dependency acknowledgements and details, see
+[CREDITS.md](CREDITS.md).
+
 ---
 
 ## Original NeuralAudio documentation
