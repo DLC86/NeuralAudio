@@ -80,10 +80,12 @@ For implementation details, see the [PNAM integration guide](PNAM.md) and
   models the selected output gain is applied **inside `Process()`**; for
   static NAM/Keras models the host applies the gain returned by
   `GetRecommendedOutputDBAdjustment()` as before. Do not apply it twice.
-- Calibrated uses exported interface/output dBu metadata. Normalized targets
-  **−18 dB** based on exported loudness. Auto chooses the appropriate mode
-  using the model's `gear_type`; missing/nonfinite metadata safely falls
-  back to Raw without inventing calibration values.
+- Calibrated uses exported interface/output dBu metadata. Its output reference
+  is captured when the model is loaded: changing the input calibration later
+  adjusts drive, not output trim, even after switching output modes.
+  Normalized targets **−18 dB** based on exported loudness. Auto chooses the
+  appropriate mode using the model's `gear_type`; missing/nonfinite metadata
+  safely falls back to Raw without inventing calibration values.
 - Exposes requested versus effective output modes, calibration input level,
   and the full original metadata JSON, including custom and nested fields
   such as per-size training/validation statistics.

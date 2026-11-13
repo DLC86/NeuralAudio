@@ -137,7 +137,7 @@ namespace NeuralAudio
 		virtual float GetRecommendedOutputDBAdjustment()
 		{
 			switch (GetEffectiveOutputMode()) {
-				case OutputMode::Calibrated: return modelOutputLevelDBu - audioInputLevelDBu;
+				case OutputMode::Calibrated: return modelOutputLevelDBu - outputCalibrationReferenceDBu;
 				case OutputMode::Normalized: return -18.0f - modelLoudnessDB;
 				default: return 0;
 			}
@@ -186,6 +186,8 @@ namespace NeuralAudio
 
 	protected:
 		float audioInputLevelDBu = (float)DEFAULT_INPUT_DBU;
+		// Snapshotted on load: changing input drive never retunes output.
+		float outputCalibrationReferenceDBu = (float)DEFAULT_INPUT_DBU;
 		float modelInputLevelDBu = 12;
 		float modelOutputLevelDBu = 12;
 		float modelLoudnessDB = -18;

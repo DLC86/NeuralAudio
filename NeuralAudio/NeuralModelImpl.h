@@ -30,6 +30,8 @@ namespace NeuralAudio
 			void ReadNAMConfig(const nlohmann::json& modelJson)
 			{
 				modelVersion = modelJson.at("version");
+				// Capture the interface reference for this model load.
+				outputCalibrationReferenceDBu = audioInputLevelDBu;
 				kerasModel = false;
 				hasLoudness = hasOutputCalibration = false;
 
@@ -72,6 +74,7 @@ namespace NeuralAudio
 			void ReadKerasConfig(const nlohmann::json& modelJson)
 			{
 				kerasModel = true;
+				outputCalibrationReferenceDBu = audioInputLevelDBu;
 				hasLoudness = hasOutputCalibration = false;
 				if (modelJson.contains("samplerate") && modelJson.at("samplerate").is_number())
 				{

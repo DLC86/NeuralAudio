@@ -96,7 +96,7 @@ struct ParametricModel::Impl
     nlohmann::json metadata = nlohmann::json::object();
     size_t active = 0;
     int blockSize = 128;
-    float outputLevel = 12, outputGain = 1;
+    float outputReferenceLevel = 12, outputGain = 1;
     OutputMode requested = OutputMode::Auto;
     OutputMode effective = OutputMode::Raw;
 
@@ -109,7 +109,7 @@ struct ParametricModel::Impl
     float GainDB() const
     {
         if (effective == OutputMode::Calibrated)
-            return metadata.at("output_level_dbu").get<float>() - outputLevel;
+            return metadata.at("output_level_dbu").get<float>() - outputReferenceLevel;
         if (effective == OutputMode::Normalized)
             return -18.0f - metadata.at("loudness").get<float>();
         return 0;
@@ -142,7 +142,9 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
 {
     auto next = std::make_unique<Impl>();
     next->requested = impl->requested;
-    next->outputLevel = impl->outputLevel;
+    // Capture the interface reference for this model load; subsequent input
+    // calibration changes affect drive only.
+    next->outputReferenceLevel = audioInputLevelDBu;
     next->weightUpdateIntervalMs = impl->weightUpdateIntervalMs;
     next->weightSmoothingMs = impl->weightSmoothingMs;
     const auto* gainConfig = pnam::OutputGainCurve::FindConfig(source);
@@ -359,8 +361,7 @@ void ParametricModel::SetAudioInputLevelDBu(float value)
 {
     if (!std::isfinite(value)) throw std::invalid_argument("Invalid interface calibration");
     NeuralModel::SetAudioInputLevelDBu(value);
-    impl->outputLevel = value;
-    impl->UpdateGain();
+    // Output-mode gain remains referenced to the calibration at model load.
 }
 float ParametricModel::GetOutputGainDB() const { return impl->GainDB(); }
 float ParametricModel::GetRecommendedInputDBAdjustment()

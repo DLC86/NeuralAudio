@@ -205,6 +205,16 @@ void TestAutoOutputModeAllModels() {
     amp.SetOutputMode(OutputMode::Calibrated);
     Check(std::abs(amp.GetRecommendedOutputDBAdjustment() + 6.f) < 1e-6f,
           "Explicit Calibrated output");
+    amp.SetAudioInputLevelDBu(24.f);
+    Check(std::abs(amp.GetRecommendedOutputDBAdjustment() + 6.f) < 1e-6f,
+          "Static input calibration must not modify output trim");
+    amp.SetOutputMode(OutputMode::Raw);
+    amp.SetOutputMode(OutputMode::Calibrated);
+    Check(std::abs(amp.GetRecommendedOutputDBAdjustment() + 6.f) < 1e-6f,
+          "Static output mode change recalculated from modified input calibration");
+    amp.SetOutputMode(OutputMode::Auto);
+    Check(std::abs(amp.GetRecommendedOutputDBAdjustment() + 4.f) < 1e-6f,
+          "Static Auto level changed after input calibration");
     StaticProbe pedal;
     pedal.ReadNAMConfig(nlohmann::json{{"version","0.9.0"},
         {"metadata",{{"gear_type","pedal"},{"output_level_dbu",15.f}}}});
@@ -366,6 +376,19 @@ int main(int argc, char** argv) {
             Check(model->GetOutputGainDB() == -6, "Calibration sign");
             model->SetOutputMode(OutputMode::Normalized);
             Check(model->GetOutputGainDB() == 6, "Normalization gain");
+            model->SetAudioInputLevelDBu(24);
+            Check(model->GetRecommendedInputDBAdjustment() == 6,
+                  "PNAM input calibration failed to change drive");
+            model->SetOutputMode(OutputMode::Calibrated);
+            Check(model->GetOutputGainDB() == -6,
+                  "PNAM output gain changed with input calibration");
+            model->SetOutputMode(OutputMode::Raw);
+            model->SetOutputMode(OutputMode::Calibrated);
+            Check(model->GetOutputGainDB() == -6,
+                  "PNAM mode switching used the modified input calibration");
+            model->SetOutputMode(OutputMode::Normalized);
+            Check(model->GetOutputGainDB() == 6,
+                  "PNAM normalization drifted after input calibration");
             // Check rendered audio, not just the gain calculation.
             model->SetOutputMode(OutputMode::Raw);
             model->Prewarm();
@@ -394,6 +417,18 @@ int main(int argc, char** argv) {
                 if ((amp && std::string(missing) == "loudness") || (!amp && std::string(missing) == "output_level_dbu"))
                     Check(old->GetEffectiveOutputMode() == OutputMode::Raw, "Auto missing metadata fallback");
             }
+        }
+        {
+            NeuralAudio::NeuralModelLoader calibratedLoader;
+            calibratedLoader.SetAudioInputLevelDBu(18);
+            source["metadata"] = {{"input_level_dbu",18},{"output_level_dbu",6},{"loudness",-24}};
+            auto model = Load(source, calibratedLoader);
+            model->SetOutputMode(OutputMode::Calibrated);
+            Check(model->GetOutputGainDB() == -12,
+                  "PNAM did not capture non-default loader calibration");
+            model->SetAudioInputLevelDBu(24);
+            Check(model->GetOutputGainDB() == -12,
+                  "PNAM changed load-time calibration after input adjustment");
         }
         for (auto invalid : {nlohmann::json(), nlohmann::json("bad"), nlohmann::json(1e300)}) {
             source["metadata"] = {{"output_level_dbu", invalid}, {"loudness", invalid}};
