@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <numeric>
+#include <optional>
 #include <cctype>
 #include <cmath>
 #include <stdexcept>
@@ -94,6 +95,7 @@ struct ParametricModel::Impl
     std::vector<float> displayValues;
     double volumeTarget=1,volumeCurrent=1,volumeAlpha=1;
     nlohmann::json metadata = nlohmann::json::object();
+    std::vector<std::optional<float>> branchLoudness;
     size_t active = 0;
     int blockSize = 128;
     float outputReferenceLevel = 12, outputGain = 1;
@@ -106,12 +108,23 @@ struct ParametricModel::Impl
         return it != metadata.end() && it->is_number() &&
                std::isfinite(it->get<double>()) && std::isfinite(it->get<float>());
     }
+    bool HasLoudness() const
+    {
+        return (active < branchLoudness.size() && branchLoudness[active].has_value())
+            || HasNumber("loudness");
+    }
+    float Loudness() const
+    {
+        if (active < branchLoudness.size() && branchLoudness[active])
+            return *branchLoudness[active];
+        return metadata.at("loudness").get<float>();
+    }
     float GainDB() const
     {
         if (effective == OutputMode::Calibrated)
             return metadata.at("output_level_dbu").get<float>() - outputReferenceLevel;
         if (effective == OutputMode::Normalized)
-            return -18.0f - metadata.at("loudness").get<float>();
+            return -18.0f - Loudness();
         return 0;
     }
     void UpdateGain()
@@ -128,7 +141,7 @@ struct ParametricModel::Impl
                          gear == "amp_pedal_cab") ? OutputMode::Normalized : OutputMode::Calibrated;
         }
         if ((effective == OutputMode::Calibrated && !HasNumber("output_level_dbu")) ||
-            (effective == OutputMode::Normalized && !HasNumber("loudness")))
+            (effective == OutputMode::Normalized && !HasLoudness()))
             effective = OutputMode::Raw;
         outputGain = std::pow(10.0f, GainDB() / 20.0f);
         if (!std::isfinite(outputGain)) { effective = OutputMode::Raw; outputGain = 1; }
@@ -155,8 +168,21 @@ void ParametricModel::LoadFromJson(const nlohmann::json& source)
     const bool a2 = architecture == "HyperA2" ||
                     architecture == "ParametricSlimmableContainer";
     nam::ScopedPrewarmOnResetDefault noPrewarm(false);
+    next->branchLoudness.resize(a2 ? 2 : 1);
     for (int i = 0; i < (a2 ? 2 : 1); ++i)
     {
+        if (a2) {
+            const auto& entry = base.at("config").at("submodels").at(i);
+            const auto& branchMetadata = entry.contains("model") && entry["model"].is_object()
+                ? entry["model"].value("metadata", nlohmann::json::object())
+                : entry.value("metadata", nlohmann::json::object());
+            if (branchMetadata.is_object() && branchMetadata.contains("loudness") &&
+                branchMetadata["loudness"].is_number()) {
+                const double value = branchMetadata["loudness"].get<double>();
+                if (std::isfinite(value) && std::isfinite(static_cast<float>(value)))
+                    next->branchLoudness[i] = static_cast<float>(value);
+            }
+        }
         auto child = a2 ? nam::wavenet::SelectHyperA2Branch(base, i == 0) : base;
         // Preserve the source metadata verbatim for the host, but do not pass
         // invalid optional level fields to NAM Core's numeric metadata parser.
@@ -346,7 +372,7 @@ float ParametricModel::GetWeightSmoothingMs() const { return impl->weightSmoothi
 const nlohmann::json& ParametricModel::GetMetadataJson() const { return impl->metadata; }
 bool ParametricModel::HasInputCalibration() const { return impl->HasNumber("input_level_dbu"); }
 bool ParametricModel::HasOutputCalibration() const { return impl->HasNumber("output_level_dbu"); }
-bool ParametricModel::HasLoudness() const { return impl->HasNumber("loudness"); }
+bool ParametricModel::HasLoudness() const { return impl->HasLoudness(); }
 void ParametricModel::SetOutputMode(OutputMode mode)
 {
     if (mode != OutputMode::Raw && mode != OutputMode::Calibrated &&
@@ -377,7 +403,11 @@ bool ParametricModel::IsQualityChangeRealtimeSafe(float factor)
 void ParametricModel::SetQualityScaleFactor(float factor)
 {
     if (!std::isfinite(factor)) throw std::invalid_argument("Invalid quality factor");
-    impl->active = HasQualityScaling() && factor <= 0.5f ? 0 : impl->models.size() - 1;
+    const auto next = HasQualityScaling() && factor <= 0.5f ? 0u : impl->models.size() - 1;
+    if (impl->active != next) {
+        impl->active = next;
+        impl->UpdateGain(); // Loudness belongs to the selected Lite/Full branch.
+    }
 }
 int ParametricModel::GetReceptiveFieldSize() { return impl->models.at(impl->active)->GetPrewarmSamples(); }
 void ParametricModel::SetMaxAudioBufferSize(int size)

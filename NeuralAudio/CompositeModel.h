@@ -1,6 +1,8 @@
 #pragma once
 
 #include <atomic>
+#include <cmath>
+#include <optional>
 #include <vector>
 #include "NeuralModel.h"
 #include "NeuralModelImpl.h"
@@ -126,11 +128,30 @@ namespace NeuralAudio
 
 	class ScalableCompositeModel : public CompositeModel
 	{
-		public:			
+		public:
+			// Each submodel can report its own loudness. Input/output levels
+			// and gear_type always come from the outer container.
+			OutputMode GetEffectiveOutputMode() const override
+			{
+				const auto mode = NeuralModel::GetEffectiveOutputMode();
+				return mode == OutputMode::Normalized && !ActiveLoudness()
+					? OutputMode::Raw : mode;
+			}
+
+			float GetRecommendedOutputDBAdjustment() override
+			{
+				switch (GetEffectiveOutputMode()) {
+					case OutputMode::Normalized: return -18.0f - *ActiveLoudness();
+					case OutputMode::Calibrated:
+						return modelOutputLevelDBu - outputCalibrationReferenceDBu;
+					default: return 0.0f;
+				}
+			}
+
 			bool LoadFromJson(nlohmann::json& modelJson)
 			{
 				ReadNAMConfig(modelJson);
-
+				mRootLoudness = ReadLoudness(modelJson.value("metadata", nlohmann::json::object()));
 				return CreateModelFromNAMJson(modelJson);
 			}
 
@@ -142,10 +163,16 @@ namespace NeuralAudio
 
 				auto& subModels = config.at("submodels");
 
+				mBranchLoudness.clear();
 				for (auto& submodelJson : subModels)
 				{
-					NeuralModelImpl* submodel = dynamic_cast<NeuralModelImpl*>(loader->CreateFromJson(submodelJson.at("model"), ".nam", false));
-
+					const auto& child = submodelJson.at("model");
+					const auto childLoudness = ReadLoudness(child.value(
+						"metadata", nlohmann::json::object()));
+					mBranchLoudness.push_back(childLoudness);
+					if (childLoudness) hasLoudness = true;
+					NeuralModelImpl* submodel = dynamic_cast<NeuralModelImpl*>(
+						loader->CreateFromJson(child, ".nam", false));
 					AddModel(submodelJson.at("max_value"), submodel);
 				}
 
@@ -194,6 +221,28 @@ namespace NeuralAudio
 			}
 
 		protected:
+			static std::optional<float> ReadLoudness(const nlohmann::json& metadata)
+			{
+				if (!metadata.is_object() || !metadata.contains("loudness") ||
+					!metadata["loudness"].is_number())
+					return std::nullopt;
+				const auto value = metadata["loudness"].get<double>();
+				if (!std::isfinite(value) || !std::isfinite(static_cast<float>(value)))
+					return std::nullopt;
+				return static_cast<float>(value);
+			}
+
+			std::optional<float> ActiveLoudness() const
+			{
+				const auto index = currentModelIndex.load();
+				if (index >= 0 && static_cast<size_t>(index) < mBranchLoudness.size() &&
+					mBranchLoudness[static_cast<size_t>(index)])
+					return mBranchLoudness[static_cast<size_t>(index)];
+				return mRootLoudness;
+			}
+
+			std::optional<float> mRootLoudness;
+			std::vector<std::optional<float>> mBranchLoudness;
 			std::atomic<float> currentQualityLevel = 1.0f;
 			std::vector<std::tuple<float, int>> qualityLevels;
 

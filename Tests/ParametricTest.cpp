@@ -430,6 +430,38 @@ int main(int argc, char** argv) {
             Check(model->GetOutputGainDB() == -12,
                   "PNAM changed load-time calibration after input adjustment");
         }
+        {
+            // Real-world layout: shared calibration on the outer model, but
+            // separate loudness for Lite and Full, with outer fallback.
+            auto split = Read(dir / "hyper_a2_low_rank.nam");
+            split["metadata"] = {{"input_level_dbu",18},{"output_level_dbu",6},
+                                 {"loudness",-20},{"gear_type","amp"}};
+            split["config"]["submodels"][0]["metadata"] = {{"loudness",-24}};
+            split["config"]["submodels"][1]["metadata"] = {{"loudness",-22}};
+            auto model = Load(split, loader);
+            model->SetOutputMode(OutputMode::Normalized);
+            Check(std::abs(model->GetOutputGainDB() - 4) < 1e-5f,
+                  "PNAM Full child loudness ignored");
+            model->SetQualityScaleFactor(.5f);
+            Check(std::abs(model->GetOutputGainDB() - 6) < 1e-5f,
+                  "PNAM Lite child loudness ignored after quality switch");
+            model->SetAudioInputLevelDBu(24);
+            Check(std::abs(model->GetRecommendedInputDBAdjustment() - 6) < 1e-5f,
+                  "PNAM input calibration did not use outer metadata");
+            model->SetOutputMode(OutputMode::Calibrated);
+            Check(std::abs(model->GetOutputGainDB() + 6) < 1e-5f,
+                  "PNAM output calibration did not use outer metadata");
+            for (const bool invalid : {false,true}) {
+                auto fallback = split;
+                if (invalid) fallback["config"]["submodels"][0]["metadata"]["loudness"] = nullptr;
+                else fallback["config"]["submodels"][0]["metadata"].erase("loudness");
+                auto fallbackModel = Load(fallback, loader);
+                fallbackModel->SetQualityScaleFactor(.5f);
+                fallbackModel->SetOutputMode(OutputMode::Normalized);
+                Check(std::abs(fallbackModel->GetOutputGainDB() - 2) < 1e-5f,
+                      "PNAM child loudness missing/invalid did not use outer fallback");
+            }
+        }
         for (auto invalid : {nlohmann::json(), nlohmann::json("bad"), nlohmann::json(1e300)}) {
             source["metadata"] = {{"output_level_dbu", invalid}, {"loudness", invalid}};
             auto model = Load(source, loader);
