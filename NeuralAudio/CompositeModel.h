@@ -166,7 +166,7 @@ namespace NeuralAudio
 				mBranchLoudness.clear();
 				for (auto& submodelJson : subModels)
 				{
-					const auto& child = submodelJson.at("model");
+					auto& child = submodelJson.at("model");
 					const auto childLoudness = ReadLoudness(child.value(
 						"metadata", nlohmann::json::object()));
 					mBranchLoudness.push_back(childLoudness);
